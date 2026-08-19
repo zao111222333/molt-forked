@@ -41,7 +41,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
             --output "${RUNNER_TEMP}/${archive}.sha256" "${release_url}/${archive}.sha256"
           cd "${RUNNER_TEMP}"
-          sha256sum --check "${archive}.sha256"
+          sed "s/$/  ${archive}/" "${archive}.sha256" | sha256sum --check --strict -
           tar --extract --gzip --file "${archive}"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
 
