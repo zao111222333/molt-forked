@@ -2,8 +2,8 @@
 //!
 //! A Molt test script is a Molt script containing tests of Molt code.  Each
 //! test is a call of the Molt `test` command provided by the
-//! `molt::test_harness` module.  The tests are executed in the context of the
-//! the application's `molt::Interp` (and so can test application-specific commands).
+//! `molt_forked::test_harness` module.  The tests are executed in the context of the
+//! the application's `molt_forked::Interp` (and so can test application-specific commands).
 //!
 //! The test harness keeps track of the number of tests executed, and whether they
 //! passed, failed, or returned an unexpected error.
@@ -22,7 +22,7 @@
 //!
 //! See the Molt Book (or the Molt test suite) for examples of test scripts.
 
-use crate::{check_args, molt_ok, prelude::Interp, MoltResult, ResultCode, Value};
+use crate::{check_args, prelude::Interp, MoltResult, ResultCode, Value};
 use std::{env, fs, path::PathBuf};
 
 /// Executes the Molt test harness, given the command-line arguments,
@@ -33,48 +33,47 @@ use std::{env, fs, path::PathBuf};
 /// to execute.  The remaining elements are meant to be test harness options,
 /// but are currently ignored.
 ///
-/// See [`molt::interp`](../molt/interp/index.html) for details on how to configure and
+/// See [`molt_forked::interp`](../molt/interp/index.html) for details on how to configure and
 /// add commands to a Molt interpreter.
 ///
 /// # Example
 ///
 /// ```
-/// use molt::Interp;
+/// use molt_forked::prelude::*;
 /// use std::env;
 ///
 /// // FIRST, get the command line arguments.
 /// let args: Vec<String> = env::args().collect();
 ///
 /// // NEXT, create and initialize the interpreter.
-/// let mut interp = Interp::new();
-///
-/// // NOTE: commands can be added to the interpreter here.
+/// let command = gen_command!(
+///     ((), TestCtx),
+///     [],
+///     [("test", test_cmd, "run a test case")],
+/// );
+/// let mut interp = Interp::new(((), TestCtx::new()), command, true, "my-tests");
 ///
 /// // NEXT, evaluate the file, if any.
 /// if args.len() > 1 {
-///     molt::test_harness(&mut interp, &args[1..]);
+///     let _ = test_harness(&mut interp, &args[1..]);
 /// } else {
 ///     eprintln!("Usage: mytest *filename.tcl");
 /// }
 /// ```
-
 pub fn test_harness<Ctx>(
     interp: &mut Interp<(Ctx, TestCtx)>,
     args: &[String],
-) -> Result<(), ()> {
+) -> Result<(), TestHarnessError> {
     // FIRST, announce who we are.
     println!("Molt {} -- Test Harness", env!("CARGO_PKG_VERSION"));
 
     // NEXT, get the script file name
     if args.is_empty() {
         eprintln!("missing test script");
-        return Err(());
+        return Err(TestHarnessError);
     }
 
     let path = PathBuf::from(&args[0]);
-
-    // NEXT, install the test commands into the interpreter.
-    // interp.add_command("test", test_cmd);
 
     // NEXT, execute the script.
     match fs::read_to_string(&args[0]) {
@@ -86,16 +85,16 @@ pub fn test_harness<Ctx>(
             if let Err(exception) = interp.eval(&script) {
                 if exception.code() == ResultCode::Error {
                     eprintln!("{}", exception.value());
-                    return Err(());
+                    return Err(TestHarnessError);
                 } else {
                     eprintln!("Unexpected eval return: {:?}", exception);
-                    return Err(());
+                    return Err(TestHarnessError);
                 }
             }
         }
         Err(e) => {
             println!("{}", e);
-            return Err(());
+            return Err(TestHarnessError);
         }
     }
 
@@ -109,15 +108,25 @@ pub fn test_harness<Ctx>(
     if ctx.num_failed + ctx.num_errors == 0 {
         Ok(())
     } else {
-        Err(())
+        Err(TestHarnessError)
     }
 }
+
+/// Indicates that the test harness could not complete successfully.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TestHarnessError;
 
 pub struct TestCtx {
     num_tests: usize,
     num_passed: usize,
     num_failed: usize,
     num_errors: usize,
+}
+
+impl Default for TestCtx {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestCtx {
@@ -172,13 +181,13 @@ impl TestInfo {
 
     fn print_failure(&self, got_code: &str, received: &str) {
         println!("\n*** FAILED {} {}", self.name, self.description);
-        println!("Expected {} <{}>", self.code.to_string(), self.expect);
+        println!("Expected {} <{}>", self.code, self.expect);
         println!("Received {} <{}>", got_code, received);
     }
 
     fn print_error(&self, result: &MoltResult) {
         println!("\n*** ERROR {} {}", self.name, self.description);
-        println!("Expected {} <{}>", self.code.to_string(), self.expect);
+        println!("Expected {} <{}>", self.code, self.expect);
 
         match result {
             Ok(val) => println!("Received -ok <{}>", val),
@@ -189,7 +198,10 @@ impl TestInfo {
                 }
                 ResultCode::Break => println!("Received -break <>"),
                 ResultCode::Continue => println!("Received -continue <>"),
-                _ => unimplemented!(),
+                ResultCode::Okay => println!("Received -ok <{}>", exception.value()),
+                ResultCode::Other(code) => {
+                    println!("Received -{} <{}>", code, exception.value())
+                }
             },
         }
     }
@@ -314,10 +326,6 @@ fn run_test<Ctx>(interp: &mut Interp<(Ctx, TestCtx)>, info: &TestInfo) {
             info.print_helper_error("-setup", exception.value().as_str());
         }
     }
-    // if let Err(ResultCode::Error(msg)) = interp.eval(&info.setup) {
-    //     info.print_helper_error("-setup", &msg.to_string());
-    // }
-
     // Body
     let body = Value::from(&info.body);
     let result = interp.eval_value(&body);
@@ -328,10 +336,6 @@ fn run_test<Ctx>(interp: &mut Interp<(Ctx, TestCtx)>, info: &TestInfo) {
             info.print_helper_error("-cleanup", exception.value().as_str());
         }
     }
-    // if let Err(ResultCode::Error(msg)) = interp.eval(&info.cleanup) {
-    //     info.print_helper_error("-cleanup", &msg.to_string());
-    // }
-
     // NEXT, pop the scope.
     interp.pop_scope();
 

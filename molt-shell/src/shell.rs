@@ -13,18 +13,15 @@ use std::fs;
 /// To change the prompt, set the `tcl_prompt1` TCL variable to a script that returns
 /// the desired prompt.
 ///
-/// See [`molt::interp`](../molt/interp/index.html) for details on how to configure and
-/// add commands to a Molt interpreter.
+/// See [`molt_forked::interp`] for details on how to configure a Molt interpreter.
 ///
 /// # Example
 ///
 /// ```
-/// use molt::Interp;
+/// use molt_forked::Interp;
 ///
 /// // FIRST, create and initialize the interpreter.
-/// let mut interp = Interp::new();
-///
-/// // NOTE: commands can be added to the interpreter here.
+/// let mut interp = Interp::default();
 ///
 /// // NEXT, invoke the REPL.
 /// molt_shell::repl(&mut interp);
@@ -92,22 +89,19 @@ pub fn repl<Ctx: 'static>(interp: &mut Interp<Ctx>) {
 /// * The Molt variable `argv` will be set to a Molt list containing the remainder of the
 ///   `argv` array.
 ///
-/// See [`molt::interp`](../molt/interp/index.html) for details on how to configure and
-/// add commands to a Molt interpreter.
+/// See [`molt_forked::interp`] for details on how to configure a Molt interpreter.
 ///
 /// # Example
 ///
 /// ```
-/// use molt::Interp;
+/// use molt_forked::Interp;
 /// use std::env;
 ///
 /// // FIRST, get the command line arguments.
 /// let args: Vec<String> = env::args().collect();
 ///
 /// // NEXT, create and initialize the interpreter.
-/// let mut interp = Interp::new();
-///
-/// // NOTE: commands can be added to the interpreter here.
+/// let mut interp = Interp::default();
 ///
 /// // NEXT, evaluate the file, if any.
 /// if args.len() > 1 {

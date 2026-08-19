@@ -13,7 +13,14 @@ test rename-2.1 {rename command to ""} -setup {
 } -body {
     rename hello ""
     hello
-} -error {invalid command name "hello"}
+} -error {unknown command "hello", valid commands:
+tcl:
+  append, array, assert_eq, break, catch, continue, dict, error, expr, for, foreach, global, if, incr, info, join, lappend, lindex, list, llength, proc, puts, rename, return, set, string, throw, time, unset, while, source, exit, parse, pdump, pclear
+molt-test:
+  test  run a test case
+  help  [-all]
+procedure:
+  doit, lexpr}
 
 test rename-2.2 {rename command} -setup {
     proc hello {} { return "hello" }

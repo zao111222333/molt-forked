@@ -9,24 +9,17 @@ fn test_tcl_tests() {
         (YourCtx::default(), TestCtx::new()),
         gen_command!(
             (YourCtx, TestCtx),
-            // native commands
             [
-                // TODO: Requires file access.  Ultimately, might go in an extension crate if
-                // the necessary operations aren't available in core::).
                 (_SOURCE, cmd_source),
-                // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
-                // extension scripts).
                 (_EXIT, cmd_exit),
-                // TODO: Developer Tools
                 (_PARSE, cmd_parse),
                 (_PDUMP, cmd_pdump),
                 (_PCLEAR, cmd_pclear)
             ],
-            // embedded commands
-            [("test", "", test_cmd, "")]
+            [("test", test_cmd, "run a test case")]
         ),
         true,
-        "",
+        "molt-test",
     );
     interp.set_recursion_limit(200);
 

@@ -28,12 +28,6 @@ impl<'a> Tokenizer<'a> {
         Self { input, index: 0, chars: input.chars().peekable() }
     }
 
-    /// Returns the entire input.
-    #[allow(dead_code)]
-    pub fn input(&self) -> &str {
-        self.input
-    }
-
     // Returns the remainder of the input starting at the index.
     pub fn as_str(&self) -> &str {
         &self.input[self.index..]
@@ -42,12 +36,6 @@ impl<'a> Tokenizer<'a> {
     // Returns the current index as a mark, for later use.
     pub fn mark(&self) -> usize {
         self.index
-    }
-
-    // Returns the remainder of the input starting at the given mark.
-    #[allow(dead_code)]
-    pub fn tail(&self, mark: usize) -> &str {
-        &self.input[mark..]
     }
 
     /// Returns the next character and updates the index.
@@ -72,14 +60,6 @@ impl<'a> Tokenizer<'a> {
     pub fn token(&self, mark: usize) -> &str {
         assert!(mark <= self.index, "mark follows index");
         &self.input[mark..self.index]
-    }
-
-    /// Get the token between the mark and the index.  Returns "" if
-    /// mark == index.
-    #[allow(dead_code)]
-    pub fn token2(&self, mark: usize, index: usize) -> &str {
-        assert!(mark <= index, "mark follows index");
-        &self.input[mark..index]
     }
 
     /// Resets the index to the given mark.  For internal use only.
@@ -201,7 +181,8 @@ impl<'a> Tokenizer<'a> {
 
                     // Note: only works because these digits are single bytes.
                     // TODO: count instead.
-                    while self.has(|ch| ch.is_digit(16)) && self.index - mark < max {
+                    while self.has(|ch| ch.is_ascii_hexdigit()) && self.index - mark < max
+                    {
                         self.next();
                     }
 
@@ -211,7 +192,7 @@ impl<'a> Tokenizer<'a> {
 
                     let hex = &self.input[mark..self.index];
 
-                    let val = u32::from_str_radix(&hex, 16).unwrap();
+                    let val = u32::from_str_radix(hex, 16).unwrap();
                     if let Some(ch) = std::char::from_u32(val) {
                         ch
                     } else {
@@ -240,7 +221,6 @@ mod tests {
         let mut ptr = Tokenizer::new("abc");
 
         // Initial state
-        assert_eq!(ptr.input(), "abc");
         assert_eq!(ptr.as_str(), "abc");
         assert_eq!(ptr.peek(), Some('a'));
     }

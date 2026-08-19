@@ -7,7 +7,7 @@
 //! * Check scripts for completeness
 //! * Extend the language by defining new Molt commands in Rust
 //! * Set and get Molt variables
-//! * Access application data via the context cache
+//! * Access application data through a statically typed context
 //!
 //! The following describes the features of the [`Interp`] in general; follow the links for
 //! specifics of the various types and methods. See also [The Molt Book] for a general
@@ -21,24 +21,15 @@
 //!
 //! # Creating an Interpreter
 //!
-//! There are two ways to create an interpreter.  The usual way is to call
-//! [`Interp::new`](struct.Interp.html#method.new), which creates an interpreter and populates
-//! it with all of the standard Molt commands.  The application can then add any
-//! application-specific commands.
-//!
-//! Alternatively, [`Interp::empty`](struct.Interp.html#method.empty) creates an interpreter
-//! with no built-in commands, allowing the application to define only those commands it needs.
-//! Such an empty interpreter can be configured as the parser for data and configuration files,
-//! or as the basis for a simple console command set.
-//!
-//! **TODO**: Define a way to add various subsets of the standard commands to an initially
-//! empty interpreter.
+//! [`Interp::default`] creates an interpreter with unit context and the standard command set.
+//! Applications with their own context or commands declare a static dispatcher with
+//! [`gen_command!`](crate::gen_command) and pass it to [`Interp::new`].
 //!
 //! ```
-//! use molt::Interp;
+//! use molt_forked::Interp;
 //! let mut interp = Interp::default();
 //!
-//! // add commands, evaluate scripts, etc.
+//! // evaluate scripts, set variables, etc.
 //! ```
 //!
 //! # Evaluating Scripts
@@ -53,9 +44,9 @@
 //! For example, the following snippet uses the Molt `expr` command to evaluate an expression.
 //!
 //! ```
-//! use molt::Interp;
-//! use molt::molt_ok;
-//! use molt::types::*;
+//! use molt_forked::Interp;
+//! use molt_forked::molt_ok;
+//! use molt_forked::types::*;
 //!
 //! let _ = my_func();
 //!
@@ -107,9 +98,9 @@
 //! as in the `if` or `while` commands:
 //!
 //! ```
-//! use molt::Interp;
-//! use molt::molt_ok;
-//! use molt::types::*;
+//! use molt_forked::Interp;
+//! use molt_forked::molt_ok;
+//! use molt_forked::types::*;
 //!
 //! # let _ = dummy();
 //! # fn dummy() -> MoltResult {
@@ -132,28 +123,25 @@
 //! # Defining New Commands
 //!
 //! The usual reason for embedding Molt in an application is to extend it with
-//! application-specific commands.  There are several ways to do this.
-//!
-//! The simplest method, and the one used by most of Molt's built-in commands, is to define a
-//! [`CommandFunc`] and register it with the interpreter using the
-//! [`Interp::add_command`](struct.Interp.html#method.add_command) method. A `CommandFunc` is
-//! simply a Rust function that returns a [`MoltResult`] given an interpreter and a slice of Molt
-//! [`Value`] objects representing the command name and its arguments. The function may interpret
-//! the array of arguments in any way it likes.
+//! application-specific commands. Commands are declared with [`gen_command!`](crate::gen_command),
+//! which produces a static dispatcher and compile-time-formatted help text. A command function
+//! receives the interpreter and a slice of Molt [`Value`] objects containing the command name and
+//! its arguments.
 //!
 //! The following example defines a command called `square` that squares an integer value.
 //!
 //! ```
-//! use molt::Interp;
-//! use molt::check_args;
-//! use molt::molt_ok;
-//! use molt::types::*;
+//! use molt_forked::prelude::*;
 //!
 //! # let _ = dummy();
 //! # fn dummy() -> MoltResult {
-//! // FIRST, create the interpreter and add the needed command.
-//! let mut interp = Interp::default();
-//! interp.add_command("square", cmd_square);
+//! // FIRST, declare the command set and create the interpreter.
+//! let command = gen_command!(
+//!     (),
+//!     [],
+//!     [("square", cmd_square, "square an integer")],
+//! );
+//! let mut interp = Interp::new((), command, false, "square-example");
 //!
 //! // NEXT, try using the new command.
 //! let val = interp.eval("square 5")?;
@@ -162,17 +150,17 @@
 //! # }
 //!
 //! // The command: square intValue
-//! fn cmd_square(_: &mut Interp, _: &[ContextID], argv: &[Value]) -> MoltResult {
+//! fn cmd_square(_: &mut Interp<()>, argv: &[Value]) -> MoltResult {
 //!     // FIRST, check the number of arguments.  Returns an appropriate error
 //!     // for the wrong number of arguments.
 //!     check_args(1, argv, 2, 2, "intValue")?;
 //!
 //!     // NEXT, get the intValue argument as an int.  Returns an appropriate error
 //!     // if the argument can't be interpreted as an integer.
-//!     let intValue = argv[1].as_int()?;
+//!     let int_value = argv[1].as_int()?;
 //!
 //!     // NEXT, return the product.
-//!     molt_ok!(intValue * intValue)
+//!     molt_ok!(int_value * int_value)
 //! }
 //! ```
 //!
@@ -223,12 +211,12 @@
 //! for example, returns the assigned or retrieved value; it is defined like this:
 //!
 //! ```
-//! use molt::Interp;
-//! use molt::check_args;
-//! use molt::molt_ok;
-//! use molt::types::*;
+//! use molt_forked::Interp;
+//! use molt_forked::check_args;
+//! use molt_forked::molt_ok;
+//! use molt_forked::types::*;
 //!
-//! pub fn cmd_set(interp: &mut Interp, _: &[ContextID], argv: &[Value]) -> MoltResult {
+//! pub fn cmd_set(interp: &mut Interp<()>, argv: &[Value]) -> MoltResult {
 //!    check_args(1, argv, 2, 3, "varName ?newValue?")?;
 //!
 //!    if argv.len() == 3 {
@@ -269,43 +257,24 @@
 //! crate), where all of the commands in the extension need access to some body of
 //! extension-specific data.
 //!
-//! All of these patterns (and others) are implemented by means of the interpreter's
-//! _context cache_, which is a means of relating mutable data to a particular command or
-//! family of commands.  See below.
+//! All of these patterns can use the interpreter's generic application context, which is
+//! available to every command as `interp.context`.
 //!
-//! # Commands and the Context Cache
+//! # Commands and Application Context
 //!
-//! Most Molt commands require access only to the Molt interpreter in order to do their
-//! work.  Some need mutable or immutable access to command-specific data (which is often
-//! application-specific data).  This is provided by means of the interpreter's
-//! _context cache_:
-//!
-//! * The interpreter is asked for a new `ContextID`, an ID that is unique in that interpreter.
-//!
-//! * The client associates the context ID with a new instance of a context data structure,
-//!   usually a struct.  This data structure is added to the context cache.
-//!
-//!   * This struct may contain the data required by the command(s), or keys allowing it
-//!     to access the data elsewhere.
-//!
-//! * The `ContextID` (can be multiple, provided as a slice) is provided to the interpreter when adding commands that require that
-//!   context(s).
-//!
-//! * A command can mutably access its context data when it is executed.
-//!
-//! * The cached data is dropped when the last command referencing a `ContextID` is removed
-//!   from the interpreter.
-//!
-//! This mechanism supports all of the patterns described above.  For example, Molt's
+//! Most Molt commands require access only to the Molt interpreter. Some need mutable access to
+//! application state. The application's context type is selected when its command set is
+//! declared and is stored directly in the interpreter, without a run-time registry or downcast.
+//! For example, Molt's
 //! test harness provides a `test` command that defines a single test.  When it executes, it must
 //! increment a number of statistics: the total number of tests, the number of successes, the
 //! number of failures, etc.  This can be implemented as follows:
 //!
 //! ```
-//! use molt::Interp;
-//! use molt::check_args;
-//! use molt::molt_ok;
-//! use molt::types::*;
+//! use molt_forked::Interp;
+//! use molt_forked::check_args;
+//! use molt_forked::molt_ok;
+//! use molt_forked::types::*;
 //!
 //! // The context structure to hold the stats
 //! struct Stats {
@@ -323,26 +292,25 @@
 //!
 //! # let _ = dummy();
 //! # fn dummy() -> MoltResult {
-//! // Create the interpreter.
-//! let mut interp = Interp::default();
-//!
-//! // Create the context struct, assigning a context ID
-//! let context_id = interp.save_context(Stats::new());
-//!
-//! // Add the `test` command with the given context.
-//! interp.add_context_command("test", cmd_test, &[context_id]);
+//! // Declare the command set and create the interpreter with its context.
+//! let command = molt_forked::gen_command!(
+//!     Stats,
+//!     [],
+//!     [("test", cmd_test, "record a passing test")],
+//! );
+//! let mut interp = Interp::new(Stats::new(), command, false, "stats-example");
 //!
 //! // Try using the new command.  It should increment the `num_passed` statistic.
-//! let val = interp.eval("test ...")?;
-//! assert_eq!(interp.context::<Stats>(context_id).num_passed, 1);
+//! interp.eval("test")?;
+//! assert_eq!(interp.context.num_passed, 1);
 //! # molt_ok!()
 //! # }
 //!
 //! // A stub test command.  It ignores its arguments, and
 //! // increments the `num_passed` statistic in its context.
-//! fn cmd_test(interp: &mut Interp, context_ids: &[ContextID], argv: &[Value]) -> MoltResult {
+//! fn cmd_test(interp: &mut Interp<Stats>, _argv: &[Value]) -> MoltResult {
 //!     // Pretend it passed
-//!     interp.context::<Stats>(context_ids[0]).num_passed += 1;
+//!     interp.context.num_passed += 1;
 //!
 //!     molt_ok!()
 //! }
@@ -351,38 +319,8 @@
 //! # Ensemble Commands
 //!
 //! An _ensemble command_ is simply a command with subcommands, like the standard Molt `info`
-//! and `array` commands.  At the Rust level, it is simply a command that looks up its subcommand
-//! (e.g., `argv[1]`) in an array of `Subcommand` structs and executes it as a command.
-//!
-//! The [`Interp::call_subcommand`](struct.Interp.html#method.call_subcommand) method is used
-//! to look up and call the relevant command function, handling all relevant errors in the
-//! TCL-standard way.
-//!
-//! For example, the `array` command is defined as follows.
-//!
-//! ```ignore
-//! const ARRAY_SUBCOMMANDS: [Subcommand; 6] = [
-//!     Subcommand("exists", cmd_array_exists),
-//!     Subcommand("get", cmd_array_get),
-//!     // ...
-//! ];
-//!
-//! pub fn cmd_array(interp: &mut Interp, context_ids: &[ContextID], argv: &[Value]) -> MoltResult {
-//!     interp.call_subcommand(context_ids, argv, 1, &ARRAY_SUBCOMMANDS)
-//! }
-//!
-//! pub fn cmd_array_exists(interp: &mut Interp, _: &[ContextID], argv: &[Value]) -> MoltResult {
-//!     check_args(2, argv, 3, 3, "arrayName")?;
-//!     molt_ok!(Value::from(interp.array_exists(argv[2].as_str())))
-//! }
-//!
-//! // ...
-//! ```
-//!
-//! The `cmd_array` and `cmd_array_exists` functions are just normal Molt `CommandFunc`
-//! functions.  The `array` command is added to the interpreter using `Interp::add_command`
-//! in the usual way. Note that the `context_id`s are passed to the subcommand functions, though
-//! in this case it isn't needed.
+//! and `array` commands. Use [`gen_subcommand!`](crate::gen_subcommand) to generate its static
+//! `match` dispatcher and compile-time-aligned help text from one declaration.
 //!
 //! Also, notice that the call to `check_args` in `cmd_array_exists` has `2` as its first
 //! argument, rather than `1`.  That indicates that the first two arguments represent the
@@ -396,34 +334,13 @@
 //! * A constructor command that creates instances of the given object type.  (We use the word
 //!   *type* rather than *class* because inheritance is usually neither involved or available.)
 //!
-//! * An instance is an ensemble command:
-//!   * Whose name is provided to the constructor
-//!   * That has an associated context structure, initialized by the constructor, that belongs
-//!     to it alone.
+//! * An instance is represented by an identifier stored in the application's typed context.
+//! * A static ensemble command receives that identifier as an argument and dispatches to the
+//!   appropriate subcommand.
+//! * Each subcommand accesses the instance through `interp.context`.
 //!
-//! * Each of the object's subcommand functions is passed the object's context ID, so that all
-//!   can access the object's data.
-//!
-//! Thus, the constructor command will do the following:
-//!
-//! * Create and initialize a context structure, assigning it a `ContextID` via
-//!   `Interp::save_context`.
-//!   * The context structure may be initialized with default values, or configured further
-//!     based on the constructor command's arguments.
-//!
-//! * Determine a name for the new instance.
-//!   * The name is usually passed in as an argument, but can be computed.
-//!
-//! * Create the instance using `Interp::add_context_command` and the instance's ensemble
-//!   `CommandFunc`.
-//!
-//! * Usually, return the name of the newly created command.
-//!
-//! Note that there's no real difference between defining a simple ensemble like `array`, as
-//! shown above, and defining an object command as described here, except that:
-//!
-//! * The instance is usually created "on the fly" rather than at interpreter initialization.
-//! * The instance will always have data in the context cache.
+//! This keeps the dispatcher static while allowing applications to create and destroy object
+//! data dynamically in their own zero-cost Rust data structures.
 //!
 //! # Checking Scripts for Completeness
 //!
@@ -436,12 +353,10 @@
 //! [The Molt Book]: https://wduquette.github.io/molt/
 //! [`MoltResult`]: ../types/type.MoltResult.html
 //! [`Exception`]: ../types/enum.Exception.html
-//! [`CommandFunc`]: ../types/type.CommandFunc.html
 //! [`Value`]: ../value/index.html
 //! [`Interp`]: struct.Interp.html
 use crate::dict::dict_new;
 use crate::expr;
-use crate::gen_command;
 use crate::list::list_to_string;
 use crate::molt_err;
 use crate::molt_ok;
@@ -468,11 +383,14 @@ const OPT_ERRORCODE: &str = "-errorcode";
 const OPT_ERRORINFO: &str = "-errorinfo";
 const ZERO: &str = "0";
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CommandType {
     Native,
     Embedded,
     Proc,
 }
+#[doc(hidden)]
 pub struct Command<Ctx: 'static> {
     fn_execute: fn(&str, &mut Interp<Ctx>, &[Value]) -> MoltResult,
     fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandType>,
@@ -481,6 +399,7 @@ pub struct Command<Ctx: 'static> {
 }
 impl<Ctx> Command<Ctx> {
     #[inline]
+    #[doc(hidden)]
     pub fn new(
         fn_execute: fn(&str, &mut Interp<Ctx>, &[Value]) -> MoltResult,
         fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandType>,
@@ -490,8 +409,6 @@ impl<Ctx> Command<Ctx> {
         Self { fn_execute, fn_type, native_names, embedded_names }
     }
 }
-cfg_if::cfg_if! {
-  if #[cfg(feature = "std_buff")] {
 /// The Molt Interpreter.
 ///
 /// The `Interp` struct is the primary API for
@@ -508,9 +425,9 @@ cfg_if::cfg_if! {
 /// Molt commands.
 ///
 /// ```
-/// use molt::types::*;
-/// use molt::Interp;
-/// use molt::molt_ok;
+/// use molt_forked::types::*;
+/// use molt_forked::Interp;
+/// use molt_forked::molt_ok;
 /// # fn dummy() -> MoltResult {
 /// let mut interp = Interp::default();
 /// let four = interp.eval("expr {2 + 2}")?;
@@ -519,93 +436,33 @@ cfg_if::cfg_if! {
 /// # }
 /// ```
 ///
-/// The `Interp` can be associated with a lifetime. If so, it is allowed
-/// to create contexts consisting of references and mutable references
-/// within that lifetime. Under the hood, the references are stored as
-/// raw pointers.
-pub struct Interp<Ctx> where
-  Ctx: 'static,
+/// The application context type is selected statically and stored directly in the interpreter.
+pub struct Interp<Ctx>
+where
+    Ctx: 'static,
 {
-  pub name: &'static str,
-  // Command Table
-  command: Command<Ctx>,
-  procs: HashMap<String, Rc<Procedure>>,
-  // Variable Table
-  scopes: ScopeStack,
+    pub name: &'static str,
+    // Command Table
+    command: Command<Ctx>,
+    procs: HashMap<String, Rc<Procedure>>,
+    // Variable Table
+    scopes: ScopeStack,
 
-  /// Embedded context
-  pub context: Ctx,
-  pub std_buff: Vec<Result<Value,Exception>>,
-  // Defines the recursion limit for Interp::eval().
-  recursion_limit: usize,
+    /// Embedded context
+    pub context: Ctx,
+    #[cfg(feature = "std_buff")]
+    pub std_buff: Vec<Result<Value, Exception>>,
+    // Defines the recursion limit for Interp::eval().
+    recursion_limit: usize,
 
-  // Current number of eval levels.
-  num_levels: usize,
+    // Current number of eval levels.
+    num_levels: usize,
 
-  // Profile Map
-  profile_map: HashMap<String, ProfileRecord>,
+    // Profile Map
+    profile_map: HashMap<String, ProfileRecord>,
 
-  // Whether to continue execution in case of error.
-  continue_on_error: bool,
-}
-  }else{
-    /// The Molt Interpreter.
-///
-/// The `Interp` struct is the primary API for
-/// embedding Molt into a Rust application.  The application creates an instance
-/// of `Interp`, configures with it the required set of application-specific
-/// and standard Molt commands, and then uses it to evaluate Molt scripts and
-/// expressions.  See the
-/// [module level documentation](index.html)
-/// for an overview.
-///
-/// # Example
-///
-/// By default, the `Interp` comes configured with the full set of standard
-/// Molt commands.
-///
-/// ```
-/// use molt::types::*;
-/// use molt::Interp;
-/// use molt::molt_ok;
-/// # fn dummy() -> MoltResult {
-/// let mut interp = Interp::default();
-/// let four = interp.eval("expr {2 + 2}")?;
-/// assert_eq!(four, Value::from(4));
-/// # molt_ok!()
-/// # }
-/// ```
-///
-/// The `Interp` can be associated with a lifetime. If so, it is allowed
-/// to create contexts consisting of references and mutable references
-/// within that lifetime. Under the hood, the references are stored as
-/// raw pointers.
-pub struct Interp<Ctx> where
-  Ctx: 'static,
-{
-  pub name: &'static str,
-  // Command Table
-  command: Command<Ctx>,
-  procs: HashMap<String, Rc<Procedure>>,
-  // Variable Table
-  scopes: ScopeStack,
-
-  /// Embedded context
-  pub context: Ctx,
-
-  // Defines the recursion limit for Interp::eval().
-  recursion_limit: usize,
-
-  // Current number of eval levels.
-  num_levels: usize,
-
-  // Profile Map
-  profile_map: HashMap<String, ProfileRecord>,
-
-  // Whether to continue execution in case of error.
-  continue_on_error: bool,
-}
-  }
+    // Whether to continue execution in case of error.
+    continue_on_error: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -620,35 +477,26 @@ impl ProfileRecord {
     }
 }
 
-impl Interp<()> {
-    /// Creates a new Molt interpreter with no commands defined.  Use this when crafting
-    /// command languages that shouldn't include the normal TCL commands, or as a base
-    /// to which specific Molt command sets can be added.
+impl Default for Interp<()> {
+    /// Creates a Molt interpreter with the standard command set and unit application context.
     ///
     /// # Example
     ///
     /// ```
-    /// # use molt::interp::Interp;
-    /// let mut interp = Interp::default(());
+    /// # use molt_forked::interp::Interp;
+    /// let mut interp = Interp::default();
     /// ```
-    pub fn default() -> Self {
+    fn default() -> Self {
         use crate::prelude::*;
         let command = gen_command!(
             (),
-            // native commands
             [
-                // TODO: Requires file access.  Ultimately, might go in an extension crate if
-                // the necessary operations aren't available in core::).
                 (_SOURCE, cmd_source),
-                // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
-                // extension scripts).
                 (_EXIT, cmd_exit),
-                // TODO: Developer Tools
                 (_PARSE, cmd_parse),
                 (_PDUMP, cmd_pdump),
                 (_PCLEAR, cmd_pclear)
             ],
-            // embedded commands
             []
         );
         Interp::new((), command, true, "default-app")
@@ -661,26 +509,24 @@ impl<Ctx> Interp<Ctx>
 where
     Ctx: 'static,
 {
+    /// Executes a procedure if `name` identifies one.
+    ///
+    /// This is an implementation detail used by [`gen_command!`](crate::gen_command).
+    #[doc(hidden)]
     #[inline]
-    pub fn contains_proc(&self, proc_name: &str) -> bool {
-        self.procs.contains_key(proc_name)
-    }
-    #[inline]
-    pub fn get_proc(&self, proc_name: &str) -> Option<&Rc<Procedure>> {
-        self.procs.get(proc_name)
+    pub fn try_execute_proc(&mut self, name: &str, argv: &[Value]) -> Option<MoltResult> {
+        let procedure = Rc::clone(self.procs.get(name)?);
+        Some(procedure.execute(self, argv))
     }
     /// Creates a new Molt interpreter that is pre-populated with the standard Molt commands.
     /// Use [`command_names`](#method.command_names) (or the `info commands` Molt command)
-    /// to retrieve the full list, and the [`add_command`](#method.add_command) family of
-    /// methods to extend the interpreter with new commands.
-    ///
-    /// TODO: Define command sets (sets of commands that go together, so that clients can
-    /// add or remove them in groups).
+    /// to retrieve the full list. Use [`gen_command!`](crate::gen_command) to declare an
+    /// application command set at compile time.
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
-    /// # use molt::molt_ok;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
+    /// # use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     /// let four = interp.eval("expr {2 + 2}")?;
@@ -696,34 +542,19 @@ where
         use_env: bool,
         name: &'static str,
     ) -> Self {
-        cfg_if::cfg_if! {
-          if #[cfg(feature = "std_buff")] {
-            let mut interp = Self {
-              name,
-              command,
-              recursion_limit: 1000,
-              procs: HashMap::new(),
-              context,
-              std_buff: Vec::new(),
-              scopes: ScopeStack::new(),
-              num_levels: 0,
-              profile_map: HashMap::new(),
-              continue_on_error: false,
-            };
-          } else {
-            let mut interp = Self {
-              name,
-              recursion_limit: 1000,
-              command,
-              procs: HashMap::new(),
-              context,
-              scopes: ScopeStack::new(),
-              num_levels: 0,
-              profile_map: HashMap::new(),
-              continue_on_error: false,
-            };
-          }
-        }
+        let mut interp = Self {
+            name,
+            command,
+            recursion_limit: 1000,
+            procs: HashMap::new(),
+            context,
+            #[cfg(feature = "std_buff")]
+            std_buff: Vec::new(),
+            scopes: ScopeStack::new(),
+            num_levels: 0,
+            profile_map: HashMap::new(),
+            continue_on_error: false,
+        };
 
         interp.set_scalar("errorInfo", Value::empty()).unwrap();
         if use_env {
@@ -767,8 +598,8 @@ where
     /// it's a computed `Value` or an error message (which is also a `Value`).
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
     /// let mut interp = Interp::default();
     ///
@@ -815,6 +646,9 @@ where
         // Tricky, though.  Don't want to have to parse it as a list.  Need a quick way
         // to determine if something is already a list.  (Might need two methods!)
 
+        // Parse before changing interpreter state so syntax errors cannot leak a level.
+        let script = value.as_script()?;
+
         // FIRST, check the number of nesting levels
         self.num_levels += 1;
 
@@ -824,7 +658,7 @@ where
         }
 
         // NEXT, evaluate the script and translate the result to Ok or Error
-        let mut result = self.eval_script(&*value.as_script()?);
+        let mut result = self.eval_script(&script);
 
         // NEXT, decrement the number of nesting levels.
         self.num_levels -= 1;
@@ -896,11 +730,7 @@ where
                             // this intermediate error is going to be overwritten.
                             // (due to `continue_on_error` being set).
                             // we log it before heading over to next command.
-                            cfg_if::cfg_if! {
-                              if #[cfg(feature = "wasm")] {
-                                self.std_buff.push(Err(e.clone()));
-                              }
-                            }
+                            self.buffer_intermediate_error(e);
                         }
                         result_value = Err(e);
                         continue;
@@ -919,30 +749,13 @@ where
                 // this intermediate error is going to be overwritten.
                 // (due to `continue_on_error` being set).
                 // we log it before heading over to next command.
-                cfg_if::cfg_if! {
-                  if #[cfg(feature = "wasm")] {
-                    self.std_buff.push(Err(e.clone()));
-                  }
-                }
+                self.buffer_intermediate_error(e);
             }
 
-            // if let Some(cmd) = self.commands.get(name) {
-            // let start = Instant::now();
-            let result = (self.command.fn_execute)(name, self, words.as_slice());
-            // self.profile_save(&format!("cmd.execute({})", name), start);
-
-            if let Ok(v) = result {
-                result_value = Ok(v);
-            } else if let Err(mut exception) = result {
-                // TODO: I think this needs to be done up above.
-                // // Handle the return -code, -level protocol
-                // if exception.code() == ResultCode::Return {
-                //     exception.decrement_level();
-                // }
-
-                match exception.code() {
-                    // ResultCode::Okay => result_value = exception.value(),
-                    ResultCode::Error => {
+            match (self.command.fn_execute)(name, self, words.as_slice()) {
+                Ok(value) => result_value = Ok(value),
+                Err(mut exception) => {
+                    if exception.code() == ResultCode::Error {
                         // FIRST, new error, an error from within a proc, or an error from
                         // within some other body (ignored).
                         if exception.is_new_error() {
@@ -955,45 +768,34 @@ where
                                 &list_to_string(&words)
                             ));
                         }
-                        // else if cmd.is_proc() {
-                        //   exception.add_error_info("    invoked from within");
-                        //   exception
-                        //     .add_error_info(&format!("    (procedure \"{}\" line TODO)", name));
-                        //   // TODO: same as above.
-                        //   exception.add_error_info(&format!("\"{}\"", &list_to_string(&words)));
-                        // }
                     }
-                    // return, continue, break, and custom logic
-                    // always exit the script and
+
+                    // Return, continue, break, and custom codes always exit the script and
                     // are not affected by the error flag.
-                    _ => return Err(exception),
-                }
-                if !self.continue_on_error {
-                    return Err(exception);
-                } else {
+                    if exception.code() != ResultCode::Error || !self.continue_on_error {
+                        return Err(exception);
+                    }
                     result_value = Err(exception);
                 }
-            } else {
-                unreachable!();
             }
-            // } else {
-            //   let err = molt_err!("invalid command name \"{}\"", name);
-            //   if !self.continue_on_error {
-            //     return err;
-            //   } else {
-            //     result_value = err;
-            //   }
-            // }
         }
 
         result_value
+    }
+
+    #[inline]
+    fn buffer_intermediate_error(&mut self, error: Exception) {
+        #[cfg(feature = "wasm")]
+        self.std_buff.push(Err(error));
+        #[cfg(not(feature = "wasm"))]
+        let _ = error;
     }
 
     /// Evaluates a WordVec, producing a list of Values.  The expansion operator is handled
     /// as a special case.
     #[inline]
     fn eval_word_vec(&mut self, words: &[Word]) -> Result<MoltList, Exception> {
-        let mut list: MoltList = Vec::new();
+        let mut list = Vec::with_capacity(words.len());
 
         for word in words {
             if let Word::Expand(word_to_expand) = word {
@@ -1021,8 +823,17 @@ where
             }
             Word::Script(script) => self.eval_script(script),
             Word::Tokens(tokens) => {
-                let tlist = self.eval_word_vec(tokens)?;
-                let string: String = tlist.iter().map(|i| i.as_str()).collect();
+                let mut string = String::new();
+                for token in tokens {
+                    if let Word::Expand(word_to_expand) = token {
+                        let value = self.eval_word(word_to_expand)?;
+                        for expanded in &*value.as_list()? {
+                            string.push_str(expanded.as_str());
+                        }
+                    } else {
+                        string.push_str(self.eval_word(token)?.as_str());
+                    }
+                }
                 Ok(Value::from(string))
             }
             Word::Expand(_) => panic!("recursive Expand!"),
@@ -1090,8 +901,8 @@ where
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::interp::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::interp::Interp;
     /// let mut interp = Interp::default();
     /// assert!(interp.complete("set a [expr {1+1}]"));
     /// assert!(!interp.complete("set a [expr {1+1"));
@@ -1107,8 +918,8 @@ where
     ///
     /// # Example
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     /// # fn dummy() -> Result<String,Exception> {
     /// let mut interp = Interp::default();
     /// let expr = Value::from("2 + 2");
@@ -1136,8 +947,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     /// # fn dummy() -> Result<String,Exception> {
     /// let mut interp = Interp::default();
     ///
@@ -1160,8 +971,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     /// # fn dummy() -> Result<String,Exception> {
     /// let mut interp = Interp::default();
     ///
@@ -1184,8 +995,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     /// # fn dummy() -> Result<String,Exception> {
     /// let mut interp = Interp::default();
     ///
@@ -1214,9 +1025,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1265,9 +1076,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1304,9 +1115,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1337,9 +1148,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1365,9 +1176,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1390,9 +1201,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1415,9 +1226,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1443,9 +1254,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1473,9 +1284,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1505,9 +1316,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1531,9 +1342,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1565,9 +1376,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::types::*;
-    /// use molt::Interp;
-    /// use molt::molt_ok;
+    /// use molt_forked::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1588,8 +1399,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
     /// # let mut interp = Interp::default();
     /// for name in interp.vars_in_scope() {
@@ -1607,8 +1418,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
     /// # let mut interp = Interp::default();
     /// for name in interp.vars_in_global_scope() {
@@ -1628,8 +1439,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
     /// # let mut interp = Interp::default();
     /// for name in interp.vars_in_local_scope() {
@@ -1687,7 +1498,6 @@ where
     /// Array Manipulation Methods
     ///
     /// These provide the infrastructure for the `array` command.
-
     /// Unsets an array variable givee its name.  Nothing happens if the variable doesn't
     /// exist, or if the variable is not an array variable.
     #[inline]
@@ -1700,9 +1510,9 @@ where
     /// # Example
     ///
     /// ```
-    /// # use molt::Interp;
-    /// # use molt::types::*;
-    /// # use molt::molt_ok;
+    /// # use molt_forked::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// # let mut interp = Interp::default();
     /// interp.set_scalar("a", Value::from(1))?;
@@ -1724,8 +1534,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
     /// # let mut interp = Interp::default();
     /// for txt in interp.array_get("myArray") {
@@ -1755,9 +1565,9 @@ where
     /// ```
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
-    /// # use molt::molt_ok;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
+    /// # use molt_forked::molt_ok;
     ///
     /// # fn dummy() -> MoltResult {
     /// # let mut interp = Interp::default();
@@ -1767,7 +1577,7 @@ where
     /// ```
     #[inline]
     pub fn array_set(&mut self, array_name: &str, kvlist: &[Value]) -> MoltResult {
-        if kvlist.len() % 2 == 0 {
+        if kvlist.len().is_multiple_of(2) {
             self.scopes.array_set(array_name, kvlist)?;
             molt_ok!()
         } else {
@@ -1782,8 +1592,8 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
     /// # let mut interp = Interp::default();
     /// for name in interp.array_names("myArray") {
@@ -1801,10 +1611,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
     ///
-    /// # use molt::molt_ok;
+    /// # use molt_forked::molt_ok;
     /// # fn dummy() -> MoltResult {
     /// let mut interp = Interp::default();
     ///
@@ -1820,32 +1630,12 @@ where
         self.scopes.array_size(array_name)
     }
 
-    // //--------------------------------------------------------------------------------------------
-    // // Command Definition and Handling
-
-    // /// Adds a binary command with no related context to the interpreter.  This is the normal
-    // /// way to add most commands.
-    // ///
-    // /// If the command needs access to some form of application or context data,
-    // /// use [`add_context_command`](#method.add_context_command) instead.  See the
-    // /// [module level documentation](index.html) for an overview and examples.
-    // pub fn add_command(
-    //   &mut self,
-    //   name: &str,
-    //   func: impl Fn(&mut Interp<Ctx>, &[Value]) -> MoltResult + 'static,
-    // ) {
-    //   self
-    //     .commands
-    //     .insert(name.into(), Rc::new(Command::Native(Box::new(func))));
-    // }
-
     /// Adds a procedure to the interpreter.
     ///
     /// This is how to add a Molt `proc` to the interpreter.  The arguments are the same
     /// as for the `proc` command and the `commands::cmd_proc` function.
     ///
-    /// TODO: If this method is ever made public, the parameter list validation done
-    /// in cmd_proc should be moved here.
+    /// Parameter list validation is performed by `cmd_proc` before this is called.
     #[inline]
     pub(crate) fn add_proc(&mut self, name: &str, parms: &[Value], body: &Value) {
         self.procs.insert(
@@ -1854,36 +1644,26 @@ where
         );
     }
 
-    /// Determines whether or not the interpreter contains a command with the given
+    /// Determines whether or not the interpreter contains a procedure with the given
     /// name.
+    #[doc(hidden)]
     #[inline]
     pub fn has_proc(&self, name: &str) -> bool {
         self.procs.contains_key(name)
     }
 
-    /// Renames the command.
-    ///
-    /// **Note:** This does not update procedures that reference the command under the old
-    /// name.  This is intentional: it is a common TCL programming technique to wrap an
-    /// existing command by renaming it and defining a new command with the old name that
-    /// calls the original command at its new name.
+    /// Renames a Molt procedure.
     ///
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
-    /// use molt::molt_ok;
-    /// # fn dummy() -> MoltResult {
+    /// use molt_forked::Interp;
     /// let mut interp = Interp::default();
     ///
-    /// interp.rename_command("expr", "=");
-    ///
-    /// let sum = interp.eval("= {1 + 1}")?.as_int()?;
-    ///
-    /// assert_eq!(sum, 2);
-    /// # molt_ok!()
-    /// # }
+    /// interp.eval("proc old {} {return ok}").unwrap();
+    /// interp.rename_proc("old", "new");
+    /// assert!(!interp.has_proc("old"));
+    /// assert!(interp.has_proc("new"));
     /// ```
     #[inline]
     pub fn rename_proc(&mut self, old_name: &str, new_name: &str) {
@@ -1892,42 +1672,19 @@ where
         }
     }
 
-    /// Removes the command with the given name.
-    ///
-    /// This would typically be done when destroying an object command.
+    /// Removes the Molt procedure with the given name.
     ///
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
-    /// use molt::molt_ok;
-    ///
+    /// use molt_forked::Interp;
     /// let mut interp = Interp::default();
-    ///
-    /// interp.remove_command("set");  // You'll be sorry....
-    ///
-    /// assert!(!interp.has_command("set"));
+    /// interp.eval("proc temporary {} {return ok}").unwrap();
+    /// interp.remove_proc("temporary");
+    /// assert!(!interp.has_proc("temporary"));
     /// ```
     #[inline]
     pub fn remove_proc(&mut self, name: &str) {
-        // // FIRST, get the command's context ID, if any.
-        // let context_ids = self.commands.get(name).expect("undefined command").context_ids();
-
-        // NEXT, If it has a non-empty context ID slice, decrement their references count; and if the reference
-        // is zero, remove the context.
-        // for context_id in context_ids {
-        //   if self
-        //     .context_map
-        //     .get_mut(context_id)
-        //     .expect("unknown context ID")
-        //     .decrement()
-        //   {
-        //     self.context_map.remove(context_id);
-        //   }
-        // }
-
-        // FINALLY, remove the command itself.
         self.procs.remove(name);
     }
 
@@ -1936,9 +1693,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
-    /// use molt::molt_ok;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
+    /// use molt_forked::molt_ok;
     ///
     /// let mut interp = Interp::default();
     ///
@@ -1960,11 +1717,9 @@ where
     }
     #[inline]
     pub fn proc_command_names(&self) -> String {
-        self.procs
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<&str>>()
-            .join(", ")
+        let mut names: Vec<&str> = self.procs.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names.join(", ")
     }
 
     /// Returns the body of the named procedure, or an error if the name doesn't
@@ -1984,9 +1739,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use molt::Interp;
-    /// use molt::types::*;
-    /// use molt::molt_ok;
+    /// use molt_forked::Interp;
+    /// use molt_forked::types::*;
+    /// use molt_forked::molt_ok;
     ///
     /// let mut interp = Interp::default();
     ///
@@ -1996,8 +1751,7 @@ where
     /// ```
     #[inline]
     pub fn proc_names(&self) -> MoltList {
-        let vec: MoltList =
-            self.procs.iter().map(|(name, _)| Value::from(name)).collect();
+        let vec: MoltList = self.procs.keys().map(Value::from).collect();
         vec
     }
 
@@ -2069,8 +1823,8 @@ where
     ///
     /// # Example
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::interp::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::interp::Interp;
     /// let mut interp = Interp::default();
     /// assert_eq!(interp.recursion_limit(), 1000);
     /// ```
@@ -2087,8 +1841,8 @@ where
     ///
     /// # Example
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::interp::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::interp::Interp;
     /// let mut interp = Interp::default();
     /// interp.set_recursion_limit(100);
     /// assert_eq!(interp.recursion_limit(), 100);
@@ -2134,8 +1888,8 @@ where
     ///
     /// # Example
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::interp::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::interp::Interp;
     /// let mut interp = Interp::default();
     /// assert_eq!(interp.continue_on_error(), false);
     /// ```
@@ -2147,8 +1901,8 @@ where
     ///
     /// # Example
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::interp::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::interp::Interp;
     /// let mut interp = Interp::default();
     /// interp.set_continue_on_error(true);
     /// assert_eq!(interp.continue_on_error(), true);
@@ -2166,7 +1920,7 @@ where
 /// commands table, and can be changed there freely.  The procedure truly doesn't
 /// know what its name is except when it is being executed.
 #[derive(Debug, Clone)]
-pub struct Procedure {
+pub(crate) struct Procedure {
     /// The procedure's parameter list.  Each item in the list is a name or a
     /// name/default value pair.  (This is verified by the `proc` command.)
     parms: MoltList,
@@ -2177,58 +1931,60 @@ pub struct Procedure {
 }
 
 impl Procedure {
-    pub fn execute<Ctx>(&self, interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult
+    fn execute<Ctx>(&self, interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult
     where
         Ctx: 'static,
     {
         // FIRST, push the proc's local scope onto the stack.
         interp.push_scope();
 
-        // NEXT, process the proc's argument list.
-        let mut argi = 1; // Skip the proc's name
+        let result = (|| {
+            // NEXT, process the proc's argument list.
+            let mut argi = 1; // Skip the proc's name
 
-        for (speci, spec) in self.parms.iter().enumerate() {
-            // FIRST, get the parameter as a vector.  It should be a list of
-            // one or two elements.
-            let vec = &*spec.as_list()?; // Should never fail
-            assert!(vec.len() == 1 || vec.len() == 2);
+            for (speci, spec) in self.parms.iter().enumerate() {
+                // FIRST, get the parameter as a vector.  It should be a list of
+                // one or two elements.
+                let vec = &*spec.as_list()?; // Should never fail
+                assert!(vec.len() == 1 || vec.len() == 2);
 
-            // NEXT, if this is the args parameter, give the remaining args,
-            // if any.  Note that "args" has special meaning only if it's the
-            // final arg spec in the list.
-            if vec[0].as_str() == "args" && speci == self.parms.len() - 1 {
-                interp.set_scalar("args", Value::from(&argv[argi..]))?;
+                // NEXT, if this is the args parameter, give the remaining args,
+                // if any.  Note that "args" has special meaning only if it's the
+                // final arg spec in the list.
+                if vec[0].as_str() == "args" && speci == self.parms.len() - 1 {
+                    interp.set_scalar("args", Value::from(&argv[argi..]))?;
 
-                // We've processed all of the args
-                argi = argv.len();
-                break;
+                    // We've processed all of the args
+                    argi = argv.len();
+                    break;
+                }
+
+                // NEXT, do we have a matching argument?
+                if argi < argv.len() {
+                    // Pair them up
+                    interp.set_scalar(vec[0].as_str(), argv[argi].clone())?;
+                    argi += 1;
+                    continue;
+                }
+
+                // NEXT, do we have a default value?
+                if vec.len() == 2 {
+                    interp.set_scalar(vec[0].as_str(), vec[1].clone())?;
+                } else {
+                    // We don't; we're missing a required argument.
+                    return self.wrong_num_args(&argv[0]);
+                }
             }
 
-            // NEXT, do we have a matching argument?
-            if argi < argv.len() {
-                // Pair them up
-                interp.set_scalar(vec[0].as_str(), argv[argi].clone())?;
-                argi += 1;
-                continue;
-            }
+            // NEXT, do we have any arguments left over?
 
-            // NEXT, do we have a default value?
-            if vec.len() == 2 {
-                interp.set_scalar(vec[0].as_str(), vec[1].clone())?;
-            } else {
-                // We don't; we're missing a required argument.
+            if argi != argv.len() {
                 return self.wrong_num_args(&argv[0]);
             }
-        }
 
-        // NEXT, do we have any arguments left over?
-
-        if argi != argv.len() {
-            return self.wrong_num_args(&argv[0]);
-        }
-
-        // NEXT, evaluate the proc's body, getting the result.
-        let result = interp.eval_value(&self.body);
+            // NEXT, evaluate the proc's body, getting the result.
+            interp.eval_value(&self.body)
+        })();
 
         // NEXT, pop the scope off of the stack; we're done with it.
         interp.pop_scope();
@@ -2284,7 +2040,7 @@ impl Procedure {
                 msg.push('?');
             }
         }
-        msg.push_str("\"");
+        msg.push('"');
 
         molt_err!(&msg)
     }
@@ -2419,7 +2175,7 @@ mod tests {
         interp.set_recursion_limit(100);
         assert_eq!(interp.recursion_limit(), 100);
 
-        assert!(dbg!(interp.eval("proc myproc {} { myproc }")).is_ok());
+        assert!(interp.eval("proc myproc {} { myproc }").is_ok());
         assert!(ex_match(
             &interp.eval("myproc"),
             Exception::molt_err(Value::from(
@@ -2429,27 +2185,93 @@ mod tests {
     }
 
     #[test]
-    fn context_forgotten_2_commands() {
+    fn parse_errors_restore_recursion_depth() {
+        let mut interp = Interp::default();
+        interp.set_recursion_limit(1);
+
+        assert!(interp.eval("set value {").is_err());
+        assert_eq!(interp.num_levels, 0);
+        assert_eq!(interp.eval("set value ok").unwrap().as_str(), "ok");
+    }
+
+    #[test]
+    fn procedure_argument_errors_restore_scope() {
+        let mut interp = Interp::default();
+        interp.eval("proc needs_arg {arg} {return $arg}").unwrap();
+
+        assert!(interp.eval("needs_arg").is_err());
+        assert_eq!(interp.scopes.current(), 0);
+        assert_eq!(interp.eval("set global_value visible").unwrap().as_str(), "visible");
+        assert_eq!(interp.scopes.current(), 0);
+    }
+
+    #[test]
+    fn catch_returns_custom_result_codes() {
+        let mut interp = Interp::default();
+        assert_eq!(
+            interp
+                .eval("list [catch {return -level 0 -code 7 custom} result] $result")
+                .unwrap()
+                .as_str(),
+            "7 custom"
+        );
+    }
+
+    #[test]
+    fn expression_operator_regression() {
+        let mut interp = Interp::default();
+        let cases = [
+            ("1 + 2", "3"),
+            ("7 - 4", "3"),
+            ("6 * 7", "42"),
+            ("8 / 2", "4"),
+            ("8 % 3", "2"),
+            ("1 << 3", "8"),
+            ("8 >> 2", "2"),
+            ("6 & 3", "2"),
+            ("6 | 3", "7"),
+            ("6 ^ 3", "5"),
+            ("1 < 2", "1"),
+            ("2 >= 2", "1"),
+            ("2 == 2.0", "1"),
+            ("2 != 3", "1"),
+            (r#""a" eq "a""#, "1"),
+            (r#""a" ne "b""#, "1"),
+            (r#""a" in {a b}"#, "1"),
+            (r#""z" ni {a b}"#, "1"),
+            ("1 && 2.0", "1"),
+            ("0 || 2", "1"),
+            ("1 ? 4 : 5", "4"),
+            ("-2", "-2"),
+            ("+2", "2"),
+            ("!0", "1"),
+            ("~1", "-2"),
+            ("abs(-3)", "3"),
+            ("double(3)", "3"),
+            ("int(3.8)", "3"),
+            ("round(3.6)", "4"),
+        ];
+
+        for (expression, expected) in cases {
+            assert_eq!(interp.expr(&Value::from(expression)).unwrap().as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn static_dispatcher_accepts_multiple_commands() {
         use crate::prelude::*;
         let _interp = Interp::new(
             (),
             gen_command!(
                 (),
-                // native commands
                 [
-                    // TODO: Requires file access.  Ultimately, might go in an extension crate if
-                    // the necessary operations aren't available in core::).
                     (_SOURCE, cmd_source),
-                    // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
-                    // extension scripts).
                     (_EXIT, cmd_exit),
-                    // TODO: Developer Tools
                     (_PARSE, cmd_parse),
                     (_PDUMP, cmd_pdump),
                     (_PCLEAR, cmd_pclear),
                 ],
-                // embedded commands
-                [("dummy", " ", dummy_cmd, ""), ("dummy2", "", dummy_cmd, ""),],
+                [("dummy", dummy_cmd, ""), ("dummy2", dummy_cmd, ""),],
             ),
             true,
             "",

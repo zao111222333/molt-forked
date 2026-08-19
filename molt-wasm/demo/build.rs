@@ -25,7 +25,7 @@ fn main() {
         rustc_version.chars().position(|c| c == '('),
         rustc_version.chars().position(|c| c == ')'),
     ) {
-        rustc_version = &rustc_version[..left].trim();
+        rustc_version = rustc_version[..left].trim();
     }
     let gcc_version = String::from_utf8(
         Command::new("gcc")
@@ -40,7 +40,7 @@ fn main() {
         gcc_version.chars().position(|c| c == '('),
         gcc_version.chars().position(|c| c == ')'),
     ) {
-        gcc_version = &gcc_version[left..(right + 1)].trim();
+        gcc_version = gcc_version[left..(right + 1)].trim();
     }
     // let clang_version = Command::new("clang")
     //   .arg("--version")

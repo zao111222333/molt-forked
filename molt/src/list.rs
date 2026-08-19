@@ -168,68 +168,70 @@ fn parse_bare_item(ctx: &mut Tokenizer) -> MoltResult {
 /// Converts a list, represented as a vector of `Value`s, into a string, doing
 /// all necessary quoting and escaping.
 pub fn list_to_string(list: &[Value]) -> String {
-    let mut vec: Vec<String> = Vec::new();
+    values_to_string(list.iter())
+}
 
-    let mut hash = !list.is_empty() && list[0].as_str().starts_with('#');
+/// Formats borrowed values directly into one output buffer.
+pub(crate) fn values_to_string<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+) -> String {
+    let mut output = String::new();
 
-    for item in list {
-        let item = item.to_string();
-        match get_mode(&item) {
+    for (index, item) in values.into_iter().enumerate() {
+        if index != 0 {
+            output.push(' ');
+        }
+
+        let item = item.as_str();
+        let hash = index == 0 && item.starts_with('#');
+        match get_mode(item) {
             Mode::AsIs => {
                 if hash {
-                    vec.push(brace_item(&item));
-                    hash = false;
+                    append_braced(&mut output, item);
                 } else {
-                    vec.push(item)
+                    output.push_str(item);
                 }
             }
             Mode::Brace => {
-                vec.push(brace_item(&item));
+                append_braced(&mut output, item);
             }
             Mode::Escape => {
-                vec.push(escape_item(hash, &item));
-                hash = false;
+                append_escaped(&mut output, hash, item);
             }
         }
     }
 
-    vec.join(" ")
+    output
 }
 
-fn brace_item(item: &str) -> String {
-    let mut word = String::new();
-    word.push('{');
-    word.push_str(item);
-    word.push('}');
-    word
+fn append_braced(output: &mut String, item: &str) {
+    output.push('{');
+    output.push_str(item);
+    output.push('}');
 }
 
-fn escape_item(hash: bool, item: &str) -> String {
-    let mut word = String::new();
-
+fn append_escaped(output: &mut String, hash: bool, item: &str) {
     // If hash, the first character is a "#" that must be escaped.
     // Just push the backslash on the front.
     if hash {
-        word.push('\\');
+        output.push('\\');
     }
 
     for ch in item.chars() {
         if ch.is_whitespace() {
-            word.push('\\');
-            word.push(ch);
+            output.push('\\');
+            output.push(ch);
             continue;
         }
 
         match ch {
             '{' | ';' | '$' | '[' | ']' | '\\' => {
-                word.push('\\');
-                word.push(ch);
+                output.push('\\');
+                output.push(ch);
             }
-            _ => word.push(ch),
+            _ => output.push(ch),
         }
     }
-
-    word
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -350,7 +352,6 @@ mod tests {
 
     #[test]
     fn test_parse_bare_item() {
-        println!("test_parse_bare_item");
         assert_eq!(pbare("abc"), "abc|".to_string());
         assert_eq!(pbare("abc def"), "abc| def".to_string());
         assert_eq!(pbare("abc\ndef"), "abc|\ndef".to_string());

@@ -1,145 +1,91 @@
 # Evaluating Molt Code
 
-An application can evaluate Molt code in several ways:
+An application can evaluate Molt in several ways:
 
-* Use one of the `molt::Interp::eval` or `molt::Interp::eval_value` to evaluate an
-  individual Molt command or script.
+* `Interp::eval` evaluates a string containing a command or script.
+* `Interp::eval_value` evaluates a script already stored in a `Value`, reusing its parsed form.
+* `Interp::expr`, `expr_bool`, `expr_int`, and `expr_float` evaluate expression `Value`s.
+* `molt_shell::repl` provides an interactive shell.
+* `molt_shell::script` evaluates a script file with command-line arguments.
 
-* Use the `molt::expr` function to evaluate a Molt expression, returning a Molt `Value`,
-  or `molt::expr_bool`, `molt::expr_int`, and `molt::expr_float` for results of specific
-  types.
+## Evaluating scripts
 
-* Use the `molt_shell::repl` function to provide an interactive REPL to the user.
-
-* Use the `molt_shell::script` function to evaluate a script file (or just load the script's
-  content and pass it to `molt::Interp::eval`).
-
-## Evaluating Scripts with `eval`
-
-The `molt::Interp::eval` method evaluates a string as a Molt script and returns the
-result.  When executed at the top level, `ResultCode::Break`, `ResultCode::Continue`,
-and `ResultCode::Other` are converted to errors, just as they are in `proc` bodies. See
-[The `MoltResult` Type](./molt_result.md) for details.)
-
-Thus, the following code will execute a script, returning its value and propagating
-any exceptions to the caller.
+`Interp::eval` returns the last command's value or an `Exception`:
 
 ```rust
-use molt::Interp;
-use molt::types::*;
+use molt_forked::{Interp, Value};
 
-let mut interp = Interp::new();
-
-...
-
-let value: Value = interp.eval("...some Molt code...")?;
+let mut interp = Interp::default();
+let value: Value = interp.eval("set answer [expr {6 * 7}]")?;
+assert_eq!(value.as_int()?, 42);
 ```
 
-The `molt::Interp::eval_value` method has identical semantics, but evaluates the string
-representation of a molt `Value`. In this case, the `Value` will cache the parsed internal
-form of the script to speed up subsequent evaluations.
+When a script is already a `Value`, prefer `eval_value`. Its parsed representation is cached,
+which avoids reparsing loop bodies and other repeatedly evaluated scripts.
 
-## Evaluating Control Structure Bodies
+## Evaluating control-structure bodies
 
-The `molt::Interp::eval_value` method is used when implementing control structures.  For
-example, this is an annotated version of of Molt's [**while**](./ref/while.md) command.
+This simplified version of Molt's `while` command shows `eval_value` and result-code handling:
 
 ```rust
-pub fn cmd_while(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+pub fn cmd_while<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 3, 3, "test command")?;
 
-    // Here we evaluate the test expression as a boolean.  Any errors are propagated.
     while interp.expr_bool(&argv[1])? {
-        // Here we evaluate the loop's body.
-        let result = interp.eval_value(&argv[2]);
-
-        if let Err(exception) = result {
+        if let Err(exception) = interp.eval_value(&argv[2]) {
             match exception.code() {
-                // They want to break; so break out of the rust loop.
                 ResultCode::Break => break,
-
-                // They want to continue; so continue with the next iteration.
                 ResultCode::Continue => (),
-
-                // It's some other exception; just propagate it.
                 _ => return Err(exception),
             }
         }
     }
 
-    // All is good, so return Ok!
     molt_ok!()
 }
 ```
 
-See [The `MoltResult` Type](./molt_result.md) for more information.
+See [The `MoltResult` Type](./molt_result.md) for exception details.
 
-## Evaluating Expressions with `expr` and `expr_bool`.
+## Evaluating expressions
 
-Evaluating Molt expressions is similar.  To get any expression result (usually a
-numeric or boolean `Value`), use the `Interp::expr` method.
-
-```rust
-use molt::Interp;
-use molt::types::*;
-use molt::expr;
-
-let mut interp = Interp::new();
-
-...
-
-let value: Value = interp.expr("1 + 1")?;
-```
-
-Use `Interp::expr_bool` when a specifically boolean result is wanted:
+Expression methods accept a `Value` so their parsed representation can also be reused:
 
 ```rust
-let flag: bool = interp.expr_bool("1 == 1")?;
-```
+use molt_forked::{Interp, Value};
 
-(See the [`expr`](../ref/expr.md) command reference for more about Molt expressions.)
+let mut interp = Interp::default();
+let expression = Value::from("1 + 1");
+let value = interp.expr(&expression)?;
+assert_eq!(value.as_int()?, 2);
+
+let comparison = Value::from("2 < 3");
+assert!(interp.expr_bool(&comparison)?);
+```
 
 ## Providing an interactive REPL
 
-An interactive user shell or "REPL" (Read-Eval-Print-Loop) can be a great convenience
-when developing and debugging application scripts; it can also be useful tool for
-administering server processes.  To provide an interactive shell, use
-the `molt_shell::repl` function.
+```rust
+use molt_forked::Interp;
 
-```
-use molt::Interp;
-
-// FIRST, create and initialize the interpreter.
-let mut interp = Interp::new();
-
-// NOTE: commands can be added to the interpreter here.
-
-// NEXT, invoke the REPL.
+let mut interp = Interp::default();
 molt_shell::repl(&mut interp);
 ```
 
-The REPL's prompt can be set using the `tcl_prompt1` variable to a script; see the
-[**molt shell**](../cmdline/molt_shell.md) documentation for an example.
+The REPL prompt can be set through the `tcl_prompt1` variable; see the
+[molt shell](../cmdline/molt_shell.md) documentation.
 
-## Evaluating Script Files
+## Evaluating script files
 
-To execute a user script file, one can load the file contents and use `Interp::eval` in
-the normal way, or use the `molt_shell::script` function.  A shell application might
-execute a user script as follows.  Any errors are output to the console.
+`molt_shell::script` sets the Molt `arg0` and `argv` variables before evaluating a file:
 
-```
-use molt::Interp;
+```rust
+use molt_forked::Interp;
 use std::env;
 
-// FIRST, get the command line arguments.
 let args: Vec<String> = env::args().collect();
+let mut interp = Interp::default();
 
-// NEXT, create and initialize the interpreter.
-let mut interp = Interp::new();
-
-// NOTE: commands can be added to the interpreter here.
-
-// NEXT, evaluate the file, if any.
 if args.len() > 1 {
     molt_shell::script(&mut interp, &args[1..]);
 } else {

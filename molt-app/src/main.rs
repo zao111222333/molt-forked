@@ -6,7 +6,6 @@ fn main() {
     // FIRST, get the command line arguments.
     let args: Vec<String> = env::args().collect();
     type YourCtx = ();
-    // NOTE: commands can be added to the interpreter here.
 
     // NEXT, if there's at least one then it's a subcommand.
     if args.len() > 1 {
@@ -18,33 +17,22 @@ fn main() {
                     (YourCtx::default(), BenchCtx::new()),
                     gen_command!(
                         (YourCtx, BenchCtx),
-                        // native commands
                         [
-                            // TODO: Requires file access.  Ultimately, might go in an extension crate if
-                            // the necessary operations aren't available in core::).
                             (_SOURCE, cmd_source),
-                            // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
-                            // extension scripts).
                             (_EXIT, cmd_exit),
-                            // TODO: Developer Tools
                             (_PARSE, cmd_parse),
                             (_PDUMP, cmd_pdump),
                             (_PCLEAR, cmd_pclear)
                         ],
-                        // embedded commands
                         [
-                            ("ident", "", cmd_ident, ""),
-                            ("measure", "", measure_cmd, ""),
-                            ("ok", "", cmd_ok, "")
+                            ("ident", cmd_ident, "return a value"),
+                            ("measure", measure_cmd, "record a benchmark measurement"),
+                            ("ok", cmd_ok, "return an empty value")
                         ]
                     ),
                     true,
                     "molt-bench",
                 );
-                // NEXT, install the test commands into the interpreter.
-
-                // NEXT, create and initialize the interpreter.
-                // let mut interp = Interp::new(((), BenchCtx::new()));
                 molt_shell::benchmark(&mut interp, &args[2..]);
             }
             "shell" => {
@@ -61,25 +49,21 @@ fn main() {
                     (YourCtx::default(), TestCtx::new()),
                     gen_command!(
                         (YourCtx, TestCtx),
-                        // native commands
                         [
-                            // TODO: Requires file access.  Ultimately, might go in an extension crate if
-                            // the necessary operations aren't available in core::).
                             (_SOURCE, cmd_source),
-                            // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
-                            // extension scripts).
                             (_EXIT, cmd_exit),
-                            // TODO: Developer Tools
                             (_PARSE, cmd_parse),
                             (_PDUMP, cmd_pdump),
                             (_PCLEAR, cmd_pclear),
                         ],
-                        // embedded commands
-                        [("test", "", test_cmd, "")]
+                        [("test", test_cmd, "run a test case")]
                     ),
                     true,
                     "molt-test",
                 );
+                // Keep the recursive-procedure regression below the native main-thread stack
+                // limit, as the Rust integration harness does.
+                interp.set_recursion_limit(200);
                 if test_harness(&mut interp, &args[2..]).is_ok() {
                     std::process::exit(0);
                 } else {

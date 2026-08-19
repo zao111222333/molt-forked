@@ -51,10 +51,10 @@ Of these, client Rust code will usually only deal with `ResultCode::Error` and
 `ResultCode::Return`.  For example,
 
 ```rust
-# use molt::types::*;
-# use molt::Interp;
+# use molt_forked::types::*;
+# use molt_forked::Interp;
 
-let mut interp = Interp::new();
+let mut interp = Interp::default();
 
 let input = "set a 1";
 

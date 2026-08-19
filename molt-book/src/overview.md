@@ -4,6 +4,17 @@
 
 This is a forked version of `molt`, a embeddable TCL interpreter for Rust applications. The original repository is no longer actively maintained, and this version aims to continue its development, fix bugs, and add new features.
 
+## New in Molt-forked 0.5.0
+
+Molt 0.5.0 adds compile-time validation and automatic Unicode-aware help layout to
+`gen_subcommand!` and `gen_command!`. Command declarations now use unpadded
+`(name, handler, help)` triples. The release also removes all core `unsafe`, replaces invalid
+expression and scope states with enums and safe lookups, fixes evaluation-state leaks and
+custom result codes, and reduces allocations in common interpreter paths.
+
+All workspace packages are versioned together at `0.5.0`; the WASM packages use their local
+workspace dependencies.
+
 ## New in Molt-forked 0.4.1
 
 * The subcommands now is static, we can use `gen_subcommand!` macro to init SubCommand.
@@ -43,7 +54,7 @@ This is a forked version of `molt`, a embeddable TCL interpreter for Rust applic
 
 # Molt: More Or Less Tcl
 
-**Molt 0.3.2** is a minimal implementation of the TCL language for embedding in Rust apps
+**Molt-forked 0.5.0** is a minimal implementation of the TCL language for embedding in Rust apps
 and for scripting Rust libraries.  Molt is intended to be:
 
 *   **Small in size.** Embedding Molt shouldn't greatly increase the size of the
@@ -91,9 +102,11 @@ Using Molt, you can:
 See the [`molt-sample` repo](https://github.com/wduquette/molt-sample) for a sample Molt client
 skeleton.
 
-## New in Molt 0.3.2
+## New in Molt 0.5.0
 
-Nothing, yet!  See the [Annotated Change Log](changes.md) for the new features by version.
+Version 0.5.0 adds compile-time command validation and automatic Unicode-aware help layout,
+removes unsafe code from the core crate, repairs interpreter state leaks, and reduces
+allocations in common evaluation paths. See the [Annotated Change Log](changes.md) for details.
 
 ## Coming Attractions
 

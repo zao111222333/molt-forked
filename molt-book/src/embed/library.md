@@ -1,14 +1,27 @@
 # Molt Library Crates
 
-A Molt library crate is simply a Rust crate that can install commands into a
-Molt interpreter using any of the methods described in this chapter. For example,
-a crate might provide an `install` function:
+A Molt extension crate exports command handlers. The application includes those handlers in
+its single static `gen_command!` declaration:
 
 ```rust
-use molt::Interp
+// In the extension crate:
+use molt_forked::prelude::*;
 
-pub fn install(interp: &mut Interp) {
-    interp.add_command("mycommand", mycommand);
-    ...
+pub fn cmd_mycommand<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 1, 1, "")?;
+    molt_ok!("extension result")
 }
 ```
+
+```rust
+// In the application crate:
+let command = gen_command!(
+    AppCtx,
+    [],
+    [("mycommand", my_extension::cmd_mycommand, "run the extension")],
+);
+let mut interp = Interp::new(AppCtx::default(), command, true, "my-app");
+```
+
+This replaces the old run-time `install`/`add_command` pattern. It lets the compiler
+monomorphize the context type and keeps dispatch and help generation allocation-free.

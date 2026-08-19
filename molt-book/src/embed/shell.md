@@ -1,46 +1,34 @@
 # Custom Shells
 
-A custom Molt shell is simply an application that:
+A custom Molt shell creates an interpreter with its application command set, then passes it to
+`molt_shell::repl` for interactive use or `molt_shell::script` for a file.
 
-* Creates a Molt `interp`
-* Adds any desired commands by the methods described in the previous section
-* Passes the `interp` to `molt_shell::repl` (for an interactive shell)
-* Passes the `interp` and a file to `molt_shell::script`
+```rust
+use molt_forked::prelude::*;
+use std::env;
 
-The [sample Molt application](https://github.com/wduquette/molt-sample) provides a full
-example; here's a sketch:
+fn cmd_hello(_interp: &mut Interp<()>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 2, "name")?;
+    println!("Hello, {}", argv[1].as_str());
+    molt_ok!()
+}
 
-```
 fn main() {
-    use std::env;
-
-    // FIRST, get the command line arguments.
     let args: Vec<String> = env::args().collect();
+    let command = gen_command!(
+        (),
+        [(_SOURCE, cmd_source)],
+        [("hello", cmd_hello, "greet someone")],
+    );
+    let mut interp = Interp::new((), command, true, "hello-shell");
 
-    // NEXT, create and initialize the interpreter.
-    let mut interp = Interp::new();
-
-    // NOTE: commands can be added to the interpreter here, e.g.,
-
-    // Add a single module
-    interp.add_command("hello", cmd_hello);
-
-    // Install a Molt extension crate
-    molt_sample::install(&mut interp).expect("Could not install.");
-
-    // NEXT, evaluate the file, if any.
     if args.len() > 1 {
         molt_shell::script(&mut interp, &args[1..]);
     } else {
         molt_shell::repl(&mut interp);
     }
 }
-
-pub fn cmd_hello(_interp: &mut Interp,  _: ContextID, argv: &[Value]) -> MoltResult {
-    // Correct number of arguments?
-    check_args(1, argv, 2, 2, "name")?;
-
-    println!("Hello, {}", argv[1].as_str());
-    molt_ok!()
-}
 ```
+
+The REPL prompt can be customized by setting the `tcl_prompt1` Molt variable to a script that
+returns the desired prompt.

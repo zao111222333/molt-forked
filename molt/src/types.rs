@@ -266,10 +266,10 @@ impl Exception {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
-    /// let mut interp = Interp::new();
+    /// let mut interp = Interp::default();
     /// let input = "throw MYERR \"Error Message\"";
     ///
     /// match interp.eval(input) {
@@ -316,10 +316,10 @@ impl Exception {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
-    /// let mut interp = Interp::new();
+    /// let mut interp = Interp::default();
     /// let input = "throw MYERR \"Error Message\"";
     ///
     /// match interp.eval(input) {
@@ -348,10 +348,10 @@ impl Exception {
     /// called used the `return` command's `-level` option (or the Rust equivalent).
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
-    /// let mut interp = Interp::new();
+    /// let mut interp = Interp::default();
     /// let input = "throw MYERR \"Error Message\"";
     ///
     /// match interp.eval(input) {
@@ -384,10 +384,10 @@ impl Exception {
     /// called used the `return` command's `-level` option (or the Rust equivalent).
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
-    /// let mut interp = Interp::new();
+    /// let mut interp = Interp::default();
     /// let input = "throw MYERR \"Error Message\"";
     ///
     /// match interp.eval(input) {
@@ -426,14 +426,14 @@ impl Exception {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
-    /// # use molt::Interp;
+    /// # use molt_forked::types::*;
+    /// # use molt_forked::Interp;
     ///
-    /// let mut interp = Interp::new();
+    /// let mut interp = Interp::default();
     /// let input = "throw MYERR \"Error Message\"";
     /// assert!(my_func(&mut interp, &input).is_err());
     ///
-    /// fn my_func(interp: &mut Interp, input: &str) -> MoltResult {
+    /// fn my_func(interp: &mut Interp<()>, input: &str) -> MoltResult {
     ///     // Evaluates the input; on error, adds some error info and rethrows.
     ///     match interp.eval(input) {
     ///        Ok(val) => Ok(val),
@@ -465,7 +465,7 @@ impl Exception {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
+    /// # use molt_forked::types::*;
     ///
     /// let ex = Exception::molt_err("error message".into());
     /// assert!(ex.is_error());
@@ -507,7 +507,7 @@ impl Exception {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
+    /// # use molt_forked::types::*;
     ///
     /// let ex = Exception::molt_err2("MYERR".into(), "error message".into());
     /// assert!(ex.is_error());
@@ -758,7 +758,7 @@ impl VarName {
 
     /// Returns the parsed array index, if any.
     pub fn index(&self) -> Option<&str> {
-        self.index.as_ref().map(|x| &**x)
+        self.index.as_deref()
     }
 }
 
@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(exception.level(), 1);
         assert_eq!(exception.next_code(), ResultCode::Okay);
         assert!(!exception.is_error());
-        assert!(!exception.error_data().is_some());
+        assert!(exception.error_data().is_none());
     }
 
     #[test]
@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(exception.level(), 2);
         assert_eq!(exception.next_code(), ResultCode::Break);
         assert!(!exception.is_error());
-        assert!(!exception.error_data().is_some());
+        assert!(exception.error_data().is_none());
     }
 
     #[test]
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(exception.code(), ResultCode::Break);
         assert_eq!(exception.value(), "".into());
         assert!(!exception.is_error());
-        assert!(!exception.error_data().is_some());
+        assert!(exception.error_data().is_none());
     }
 
     #[test]
@@ -958,6 +958,6 @@ mod tests {
         assert_eq!(exception.code(), ResultCode::Continue);
         assert_eq!(exception.value(), "".into());
         assert!(!exception.is_error());
-        assert!(!exception.error_data().is_some());
+        assert!(exception.error_data().is_none());
     }
 }

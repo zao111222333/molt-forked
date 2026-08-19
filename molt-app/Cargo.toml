@@ -11,8 +11,8 @@ repository.workspace = true
 documentation.workspace = true
 
 [dependencies]
-molt-forked = { path = "../molt" }
-molt-shell = { path = "../molt-shell" }
+molt-forked.workspace = true
+molt-shell.workspace = true
 
 [[bin]]
 name = "moltsh"

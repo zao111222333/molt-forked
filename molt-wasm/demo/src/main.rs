@@ -22,7 +22,7 @@ const INIT_CMDS: [&str; 9] = [
     "set a",
     "square \"it-should-error\"",
     "help -all",
-    "brower -help",
+    "browser -help",
 ];
 
 impl App {
@@ -68,7 +68,7 @@ pub fn cmd_clear(interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     molt_ok!()
 }
 
-pub fn cmd_brower_alert(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
+pub fn cmd_browser_alert(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     if let Some(window) = web_sys::window() {
         let input = if let Some(v) = argv.get(2) {
             window.alert_with_message(v.as_str())
@@ -81,7 +81,7 @@ pub fn cmd_brower_alert(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltRes
                 if let Some(s) = e.as_string() {
                     molt_err!(s)
                 } else {
-                    molt_err!("Unkown")
+                    molt_err!("Unknown error")
                 }
             }
         }
@@ -90,7 +90,7 @@ pub fn cmd_brower_alert(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltRes
     }
 }
 
-pub fn cmd_brower_confirm(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
+pub fn cmd_browser_confirm(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     if let Some(window) = web_sys::window() {
         let input = if let Some(v) = argv.get(2) {
             window.confirm_with_message(v.as_str())
@@ -103,7 +103,7 @@ pub fn cmd_brower_confirm(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltR
                 if let Some(s) = e.as_string() {
                     molt_err!(s)
                 } else {
-                    molt_err!("Unkown")
+                    molt_err!("Unknown error")
                 }
             }
         }
@@ -112,7 +112,7 @@ pub fn cmd_brower_confirm(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltR
     }
 }
 
-pub fn cmd_brower_prompt(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
+pub fn cmd_browser_prompt(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     if let Some(window) = web_sys::window() {
         let input = if let Some(v) = argv.get(2) {
             window.prompt_with_message(v.as_str())
@@ -126,7 +126,7 @@ pub fn cmd_brower_prompt(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltRe
                 if let Some(s) = e.as_string() {
                     molt_err!(s)
                 } else {
-                    molt_err!("Unkown")
+                    molt_err!("Unknown error")
                 }
             }
         }
@@ -136,13 +136,13 @@ pub fn cmd_brower_prompt(_interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltRe
 }
 
 #[allow(non_upper_case_globals)]
-const cmd_brower: fn(&mut Interp<AppCtx>, &[Value]) -> Result<Value, Exception> = gen_subcommand!(
+const cmd_browser: fn(&mut Interp<AppCtx>, &[Value]) -> Result<Value, Exception> = gen_subcommand!(
     AppCtx,
     1,
     [
-        ("-alert", "  ", cmd_brower_alert, "alert (with message if provide)"),
-        ("-confirm", "", cmd_brower_confirm, "confirm (with message if provide)"),
-        ("-prompt", " ", cmd_brower_prompt, "prompt (with message if provide)"),
+        ("-alert", cmd_browser_alert, "alert (with message if provided)"),
+        ("-confirm", cmd_browser_confirm, "confirm (with message if provided)"),
+        ("-prompt", cmd_browser_prompt, "prompt (with message if provided)"),
     ],
 );
 
@@ -169,10 +169,10 @@ impl Component for App {
                 [],
                 // embedded commands
                 [
-                    ("about", " ", cmd_about, "display app information"),
-                    ("square", "", cmd_square, "square input and set app context number"),
-                    ("clear", " ", cmd_clear, "clear history"),
-                    ("brower", "", cmd_brower, "call brower APIs"),
+                    ("about", cmd_about, "display app information"),
+                    ("square", cmd_square, "square input and set app context number"),
+                    ("clear", cmd_clear, "clear history"),
+                    ("browser", cmd_browser, "call browser APIs"),
                 ]
             ),
             false,

@@ -1,45 +1,45 @@
 # Embedding Molt
 
-This chapter explains how to embed Molt in a Rust application.  There are several parts
-to this:
+This chapter explains how to embed Molt in a Rust application:
 
-*   Creating a Molt interpreter
-*   [Defining application-specific Molt commands](./commands.md)
-*   Invoking the interpreter to [evaluate Molt commands and scripts](./eval.md)
+* creating an interpreter;
+* [defining application commands](./commands.md);
+* [evaluating commands and scripts](./eval.md);
+* exposing a [custom shell](./shell.md).
 
-An application may execute scripts for its own purposes and arbitrary scripts defined by
-the user.  One common pattern is to define a [shell application](./shell.md) the user
-may use to execute their own scripts using the application-specific command set.  
-
-It is also possible to define [Molt library crate](./library.md) that defines commands
-for installation into an interpreter.
-
-The initial step, creating a Molt interpreter, is trivially easy:
+For the standard command set and no application context, use `Default`:
 
 ```rust
-use molt::Interp;
+use molt_forked::Interp;
 
-let mut interp = Interp::new();
-
-// Add application-specific commands
+let mut interp = Interp::default();
+let value = interp.eval("expr {2 + 2}")?;
 ```
 
-This creates an interpreter containing the standard set of Molt commands.  Alternatively,
-you can create a completely empty interpreter and add just the commands you want:
+Applications that add commands declare one static command set with `gen_command!` and pass
+it, together with a typed context, to `Interp::new`:
 
 ```rust
-use molt::Interp;
+use molt_forked::prelude::*;
 
-let mut interp = Interp::empty();
+#[derive(Default)]
+struct AppCtx {
+    calls: usize,
+}
 
-// Add application-specific commands
+fn cmd_ping(interp: &mut Interp<AppCtx>, _argv: &[Value]) -> MoltResult {
+    interp.context.calls += 1;
+    molt_ok!("pong")
+}
+
+let command = gen_command!(
+    AppCtx,
+    [],
+    [("ping", cmd_ping, "reply with pong")],
+);
+let mut interp = Interp::new(AppCtx::default(), command, true, "my-app");
 ```
 
-This is useful if you wish to use the Molt interpreter as a safe file parser.  
-
-Eventually there will be an API for adding specific standard Molt commands back into an empty
-interpreter so that the application can create a custom command set (e.g., including
-variable access and control structures but excluding file I/O), but that hasn't yet
-been implemented.
-
-We'll cover the remaining topics in the following sections.
+The generated dispatcher is a `match`, and its aligned help is a `&'static str`. Command
+names and descriptions are checked at compile time; there is no run-time command registry
+or help-layout allocation.

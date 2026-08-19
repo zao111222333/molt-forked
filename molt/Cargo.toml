@@ -13,13 +13,10 @@ documentation.workspace = true
 [dependencies]
 cfg-if = "1.0.0"
 indexmap = "2.2"
+molt-macro.workspace = true
 wasm-timer = { version = "0.2.5", optional = true}
 
 [features]
 default = []
 wasm = ["std_buff", "dep:wasm-timer"]
 std_buff = []
-# add help to native subcommand, 
-# just a template for you to add help message for your embedded subcommand,
-# should not use in practice since the there is no need to show help message for native subcommand.
-# native_subcmd_help = []

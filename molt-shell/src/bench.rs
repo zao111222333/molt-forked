@@ -3,7 +3,7 @@
 //! A Molt benchmark script is a Molt script containing benchmarks of Molt code.  Each
 //! benchmark is a call of the Molt `benchmark` command provided by the
 //! `molt_shell::bench` module.  The benchmarks are executed in the context of the
-//! the application's `molt::Interp` (and so can benchmark application-specific commands).
+//! the application's `molt_forked::Interp` (and so can benchmark application-specific commands).
 //!
 //! The harness executes each benchmark many times and retains the average run-time
 //! in microseconds. The `molt-app` tool provides access to the test harness for a
@@ -12,7 +12,6 @@
 //! See the Molt Book (or the Molt benchmark suite) for how to write
 //! benchmarks and examples of benchmark scripts.
 
-// use molt::{check_args, molt_ok, Interp, MoltInt, MoltResult, Value};
 use molt_forked::prelude::*;
 use std::{env, fs, path::PathBuf};
 
@@ -24,22 +23,34 @@ use std::{env, fs, path::PathBuf};
 /// of options, see The Molt Book or execute this function with an empty argument
 /// list.
 ///
-/// See [`molt::interp`](../molt/interp/index.html) for details on how to configure and
-/// add commands to a Molt interpreter.
+/// See [`molt_forked::interp`] for details on how to configure a Molt interpreter.
 ///
 /// # Example
 ///
 /// ```
-/// use molt::Interp;
+/// use molt_forked::prelude::*;
+/// use molt_shell::{cmd_ident, cmd_ok, measure_cmd, BenchCtx};
 /// use std::env;
 ///
 /// // FIRST, get the command line arguments.
 /// let args: Vec<String> = env::args().collect();
 ///
 /// // NEXT, create and initialize the interpreter.
-/// let mut interp = Interp::new();
-///
-/// // NOTE: commands can be added to the interpreter here.
+/// let command = gen_command!(
+///     ((), BenchCtx),
+///     [],
+///     [
+///         ("ident", cmd_ident, "return a value"),
+///         ("measure", measure_cmd, "record a measurement"),
+///         ("ok", cmd_ok, "return an empty value"),
+///     ],
+/// );
+/// let mut interp = Interp::new(
+///     ((), BenchCtx::new()),
+///     command,
+///     true,
+///     "my-benchmarks",
+/// );
 ///
 /// // NEXT, evaluate the file, if any.
 /// if args.len() > 1 {
@@ -173,6 +184,12 @@ pub struct BenchCtx {
 
     // The list of measurements.
     measurements: Vec<Measurement>,
+}
+
+impl Default for BenchCtx {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BenchCtx {

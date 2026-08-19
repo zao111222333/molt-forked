@@ -17,73 +17,61 @@ type DatumResult = Result<Datum, Exception>;
 
 /// The value type.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub(crate) enum Type {
+enum Type {
     Int,
     Float,
     String,
 }
 
-/// A parsed value.
-///
-/// **Note**: Originally did this as a struct containing an enum with associated values
-/// for the data, but that complicated the logic.  We need to easily compare the types
-/// of two values (which `if let` doesn't allow), and we need to be able to refer to a
-/// type without reference to the typed value.
-///
-/// I could have used a union to save space, but we don't keep large numbers of these
-/// around.
+/// A parsed expression value. Each variant contains exactly the state valid for its type.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Datum {
-    vtype: Type,
-    int: MoltInt,
-    flt: MoltFloat,
-    str: String,
+pub(crate) enum Datum {
+    Int(MoltInt),
+    Float(MoltFloat),
+    String(String),
 }
 
 impl Datum {
     fn none() -> Self {
-        Self {
-            vtype: Type::String,
-            int: 0,
-            flt: 0.0,
-            str: String::new(),
-        }
+        Self::String(String::new())
     }
 
     pub(crate) fn int(int: MoltInt) -> Self {
-        Self {
-            vtype: Type::Int,
-            int,
-            flt: 0.0,
-            str: String::new(),
-        }
+        Self::Int(int)
     }
 
     pub(crate) fn float(flt: MoltFloat) -> Self {
-        Self {
-            vtype: Type::Float,
-            int: 0,
-            flt,
-            str: String::new(),
-        }
+        Self::Float(flt)
     }
 
     fn string(string: &str) -> Self {
-        Self {
-            vtype: Type::String,
-            int: 0,
-            flt: 0.0,
-            str: string.to_string(),
+        Self::String(string.to_owned())
+    }
+
+    fn value_type(&self) -> Type {
+        match self {
+            Self::Int(_) => Type::Int,
+            Self::Float(_) => Type::Float,
+            Self::String(_) => Type::String,
         }
     }
 
-    // Only for checking integers.
     fn is_true(&self) -> bool {
-        match self.vtype {
-            Type::Int => self.int != 0,
-            _ => {
-                panic!("Datum::is_true called for non-integer");
-            }
+        match self {
+            Self::Int(value) => *value != 0,
+            _ => panic!("Datum::is_true called for non-integer"),
+        }
+    }
+
+    fn is_numeric(&self) -> bool {
+        matches!(self, Self::Int(_) | Self::Float(_))
+    }
+
+    fn into_string(self) -> String {
+        match self {
+            Self::Int(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+            Self::String(value) => value,
         }
     }
 }
@@ -91,52 +79,151 @@ impl Datum {
 //------------------------------------------------------------------------------------------------
 // Functions
 
-const MAX_MATH_ARGS: usize = 2;
-
-/// The argument type.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum ArgType {
-    None,
-    Float,  // Must convert to Type::Float
-    Int,    // Must convert to Type::Int
-    Number, // Either Type::Int or Type::Float is OK
+#[derive(Debug, Clone, Copy)]
+enum BuiltinFunc {
+    Abs,
+    Double,
+    Int,
+    Round,
 }
 
-type MathFunc = fn(args: &[Datum; MAX_MATH_ARGS]) -> DatumResult;
-
-struct BuiltinFunc {
-    name: &'static str,
-    num_args: usize,
-    arg_types: [ArgType; MAX_MATH_ARGS],
-    func: MathFunc,
+/// Lexical token and operator kind. Keeping this as an enum prevents invalid numeric tags and
+/// lets the compiler exhaustively check every dispatch site.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum Token {
+    Unknown,
+    Value,
+    OpenParen,
+    CloseParen,
+    Comma,
+    End,
+    Multiply,
+    Divide,
+    Modulo,
+    Plus,
+    Minus,
+    LeftShift,
+    RightShift,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+    NotEqual,
+    StringEqual,
+    StringNotEqual,
+    In,
+    NotIn,
+    BitAnd,
+    BitXor,
+    BitOr,
+    And,
+    Or,
+    Question,
+    Colon,
+    UnaryMinus,
+    UnaryPlus,
+    Not,
+    BitNot,
 }
 
-const FUNC_TABLE: [BuiltinFunc; 4] = [
-    BuiltinFunc {
-        name: "abs",
-        num_args: 1,
-        arg_types: [ArgType::Number, ArgType::None],
-        func: expr_abs_func,
-    },
-    BuiltinFunc {
-        name: "double",
-        num_args: 1,
-        arg_types: [ArgType::Number, ArgType::None],
-        func: expr_double_func,
-    },
-    BuiltinFunc {
-        name: "int",
-        num_args: 1,
-        arg_types: [ArgType::Number, ArgType::None],
-        func: expr_int_func,
-    },
-    BuiltinFunc {
-        name: "round",
-        num_args: 1,
-        arg_types: [ArgType::Number, ArgType::None],
-        func: expr_round_func,
-    },
-];
+impl Token {
+    const fn precedence(self) -> i32 {
+        match self {
+            Self::Multiply | Self::Divide | Self::Modulo => 14,
+            Self::Plus
+            | Self::Minus
+            | Self::UnaryMinus
+            | Self::UnaryPlus
+            | Self::Not
+            | Self::BitNot => 13,
+            Self::LeftShift | Self::RightShift => 12,
+            Self::Less | Self::Greater | Self::LessOrEqual | Self::GreaterOrEqual => 11,
+            Self::Equal | Self::NotEqual => 10,
+            Self::StringEqual | Self::StringNotEqual => 9,
+            Self::In | Self::NotIn => 8,
+            Self::BitAnd => 7,
+            Self::BitXor => 6,
+            Self::BitOr => 5,
+            Self::And => 4,
+            Self::Or => 3,
+            Self::Question => 2,
+            Self::Colon => 1,
+            _ => 0,
+        }
+    }
+
+    const fn is_binary(self) -> bool {
+        matches!(
+            self,
+            Self::Multiply
+                | Self::Divide
+                | Self::Modulo
+                | Self::Plus
+                | Self::Minus
+                | Self::LeftShift
+                | Self::RightShift
+                | Self::Less
+                | Self::Greater
+                | Self::LessOrEqual
+                | Self::GreaterOrEqual
+                | Self::Equal
+                | Self::NotEqual
+                | Self::StringEqual
+                | Self::StringNotEqual
+                | Self::In
+                | Self::NotIn
+                | Self::BitAnd
+                | Self::BitXor
+                | Self::BitOr
+                | Self::And
+                | Self::Or
+                | Self::Question
+                | Self::Colon
+        )
+    }
+
+    const fn is_unary(self) -> bool {
+        matches!(self, Self::UnaryMinus | Self::UnaryPlus | Self::Not | Self::BitNot)
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown token",
+            Self::Value => "value",
+            Self::OpenParen => "(",
+            Self::CloseParen => ")",
+            Self::Comma => ",",
+            Self::End => "end of expression",
+            Self::Multiply => "*",
+            Self::Divide => "/",
+            Self::Modulo => "%",
+            Self::Plus | Self::UnaryPlus => "+",
+            Self::Minus | Self::UnaryMinus => "-",
+            Self::LeftShift => "<<",
+            Self::RightShift => ">>",
+            Self::Less => "<",
+            Self::Greater => ">",
+            Self::LessOrEqual => "<=",
+            Self::GreaterOrEqual => ">=",
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+            Self::StringEqual => "eq",
+            Self::StringNotEqual => "ne",
+            Self::In => "in",
+            Self::NotIn => "ni",
+            Self::BitAnd => "&",
+            Self::BitXor => "^",
+            Self::BitOr => "|",
+            Self::And => "&&",
+            Self::Or => "||",
+            Self::Question => "?",
+            Self::Colon => ":",
+            Self::Not => "!",
+            Self::BitNot => "~",
+        }
+    }
+}
 
 //------------------------------------------------------------------------------------------------
 // Parsing Context
@@ -144,104 +231,28 @@ const FUNC_TABLE: [BuiltinFunc; 4] = [
 /// Context for expr parsing
 struct ExprInfo<'a> {
     // The full expr.
-    original_expr: String,
+    original_expr: &'a str,
 
     // The input iterator, e.g., the pointer to the next character.
     expr: Tokenizer<'a>,
 
-    // Last token's type; see constants
-    token: i32,
+    // Last token's type.
+    token: Token,
 
     // No Evaluation if > 0
-    no_eval: i32,
+    no_eval: usize,
 }
 
 impl<'a> ExprInfo<'a> {
     fn new(expr: &'a str) -> Self {
         Self {
-            original_expr: expr.to_string(),
+            original_expr: expr,
             expr: Tokenizer::new(expr),
-            token: -1,
+            token: Token::Unknown,
             no_eval: 0,
         }
     }
 }
-
-//------------------------------------------------------------------------------------------------
-// Constants and Lookup Tables
-
-// Token constants
-//
-// The token types are defined below.  In addition, there is a table
-// associating a precedence with each operator.  The order of types
-// is important.  Consult the code before changing it.
-
-const VALUE: i32 = 0;
-const OPEN_PAREN: i32 = 1;
-const CLOSE_PAREN: i32 = 2;
-const COMMA: i32 = 3;
-const END: i32 = 4;
-const UNKNOWN: i32 = 5;
-
-// Tokens 6 and 7 are unused.
-
-// Binary operators:
-const MULT: i32 = 8;
-const DIVIDE: i32 = 9;
-const MOD: i32 = 10;
-const PLUS: i32 = 11;
-const MINUS: i32 = 12;
-const LEFT_SHIFT: i32 = 13;
-const RIGHT_SHIFT: i32 = 14;
-const LESS: i32 = 15;
-const GREATER: i32 = 16;
-const LEQ: i32 = 17;
-const GEQ: i32 = 18;
-const EQUAL: i32 = 19;
-const NEQ: i32 = 20;
-const STRING_EQ: i32 = 21;
-const STRING_NE: i32 = 22;
-const IN: i32 = 23;
-const NI: i32 = 24;
-const BIT_AND: i32 = 25;
-const BIT_XOR: i32 = 26;
-const BIT_OR: i32 = 27;
-const AND: i32 = 28;
-const OR: i32 = 29;
-const QUESTY: i32 = 30;
-const COLON: i32 = 31;
-
-// Unary operators:
-const UNARY_MINUS: i32 = 32;
-const UNARY_PLUS: i32 = 33;
-const NOT: i32 = 34;
-const BIT_NOT: i32 = 35;
-
-// Precedence table.  The values for non-operator token types are ignored.
-
-const PREC_TABLE: [i32; 36] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 14, 14, 14, // MULT, DIVIDE, MOD
-    13, 13, // PLUS, MINUS
-    12, 12, // LEFT_SHIFT, RIGHT_SHIFT
-    11, 11, 11, 11, // LESS, GREATER, LEQ, GEQ
-    10, 10, // EQUAL, NEQ
-    9, 9, // STRING_EQ, STRING_NE
-    8, 8, // IN, NI
-    7, // BIT_AND
-    6, // BIT_XOR
-    5, // BIT_OR
-    4, // AND
-    3, // OR
-    2, // QUESTY
-    1, // COLON
-    13, 13, 13, 13, // UNARY_MINUS, UNARY_PLUS, NOT, BIT_NOT
-];
-
-const OP_STRINGS: [&str; 36] = [
-    "VALUE", "(", ")", ",", "END", "UNKNOWN", "6", "7", "*", "/", "%", "+", "-", "<<",
-    ">>", "<", ">", "<=", ">=", "==", "!=", "eq", "ne", "in", "ni", "&", "^", "|", "&&",
-    "||", "?", ":", "-", "+", "!", "~",
-];
 
 //------------------------------------------------------------------------------------------------
 // Public API
@@ -250,10 +261,10 @@ const OP_STRINGS: [&str; 36] = [
 pub fn expr<Ctx: 'static>(interp: &mut Interp<Ctx>, expr: &Value) -> MoltResult {
     let value = expr_top_level(interp, expr.as_str())?;
 
-    match value.vtype {
-        Type::Int => molt_ok!(Value::from(value.int)),
-        Type::Float => molt_ok!(Value::from(value.flt)),
-        Type::String => molt_ok!(Value::from(value.str)),
+    match value {
+        Datum::Int(value) => molt_ok!(Value::from(value)),
+        Datum::Float(value) => molt_ok!(Value::from(value)),
+        Datum::String(value) => molt_ok!(Value::from(value)),
     }
 }
 
@@ -261,21 +272,18 @@ pub fn expr<Ctx: 'static>(interp: &mut Interp<Ctx>, expr: &Value) -> MoltResult 
 // Expression Internals
 
 /// Provides top-level functionality shared by molt_expr_string, molt_expr_int, etc.
-fn expr_top_level<'a, Ctx: 'static>(
-    interp: &mut Interp<Ctx>,
-    string: &'a str,
-) -> DatumResult {
+fn expr_top_level<Ctx: 'static>(interp: &mut Interp<Ctx>, string: &str) -> DatumResult {
     let info = &mut ExprInfo::new(string);
 
     let result = expr_get_value(interp, info, -1);
 
     match result {
         Ok(value) => {
-            if info.token != END {
+            if info.token != Token::End {
                 return molt_err!("syntax error in expression \"{}\"", string);
             }
 
-            if value.vtype == Type::Float {
+            if matches!(value, Datum::Float(_)) {
                 // TODO: check for NaN, INF, and throw IEEE floating point error.
             }
 
@@ -296,9 +304,9 @@ fn expr_top_level<'a, Ctx: 'static>(
 #[allow(clippy::collapsible_if)]
 #[allow(clippy::cognitive_complexity)]
 #[allow(clippy::float_cmp)]
-fn expr_get_value<'a, Ctx: 'static>(
+fn expr_get_value<Ctx: 'static>(
     interp: &mut Interp<Ctx>,
-    info: &'a mut ExprInfo,
+    info: &mut ExprInfo,
     prec: i32,
 ) -> DatumResult {
     // There are two phases to this procedure.  First, pick off an initial value.
@@ -306,88 +314,37 @@ fn expr_get_value<'a, Ctx: 'static>(
     let mut got_op = false;
     let mut value = expr_lex(interp, info)?;
     let mut value2: Datum;
-    let mut operator: i32;
+    let mut operator: Token;
 
-    if info.token == OPEN_PAREN {
+    if info.token == Token::OpenParen {
         // Parenthesized sub-expression.
         value = expr_get_value(interp, info, -1)?;
 
-        if info.token != CLOSE_PAREN {
+        if info.token != Token::CloseParen {
             return molt_err!(
                 "unmatched parentheses in expression \"{}\"",
                 info.original_expr
             );
         }
     } else {
-        if info.token == MINUS {
-            info.token = UNARY_MINUS;
+        if info.token == Token::Minus {
+            info.token = Token::UnaryMinus;
         }
 
-        if info.token == PLUS {
-            info.token = UNARY_PLUS;
+        if info.token == Token::Plus {
+            info.token = Token::UnaryPlus;
         }
 
-        if info.token >= UNARY_MINUS {
+        if info.token.is_unary() {
             // Process unary operators
             operator = info.token;
-            value = expr_get_value(interp, info, PREC_TABLE[info.token as usize])?;
+            value = expr_get_value(interp, info, info.token.precedence())?;
 
             if info.no_eval == 0 {
-                match operator {
-                    UNARY_MINUS => match value.vtype {
-                        Type::Int => {
-                            value.int = -value.int;
-                        }
-                        Type::Float => {
-                            value.flt = -value.flt;
-                        }
-                        _ => {
-                            return illegal_type(value.vtype, operator);
-                        }
-                    },
-                    UNARY_PLUS => {
-                        if !value.is_numeric() {
-                            return illegal_type(value.vtype, operator);
-                        }
-                    }
-                    NOT => {
-                        match value.vtype {
-                            Type::Int => {
-                                // NOTE: Tcl uses !int here, but in Rust !int_value is a bitwise
-                                // operator, not a logical one.
-                                if value.int == 0 {
-                                    value.int = 1;
-                                } else {
-                                    value.int = 0;
-                                }
-                            }
-                            Type::Float => {
-                                if value.flt == 0.0 {
-                                    value = Datum::int(1);
-                                } else {
-                                    value = Datum::int(0);
-                                }
-                            }
-                            _ => {
-                                return illegal_type(value.vtype, operator);
-                            }
-                        }
-                    }
-                    BIT_NOT => {
-                        if let Type::Int = value.vtype {
-                            // Note: in Rust, unlike C, !int_value is a bitwise operator.
-                            value.int = !value.int;
-                        } else {
-                            return illegal_type(value.vtype, operator);
-                        }
-                    }
-                    _ => {
-                        return molt_err!("unknown unary op: \"{}\"", operator);
-                    }
-                }
+                value = eval_unary(operator, value)?;
             }
             got_op = true;
-        } else if info.token != VALUE {
+        } else if info.token != Token::Value {
             return syntax_error(info);
         }
     }
@@ -405,98 +362,96 @@ fn expr_get_value<'a, Ctx: 'static>(
         operator = info.token;
         // ??? value2.pv.next = value2.pv.buffer;
 
-        if operator < MULT || operator >= UNARY_MINUS {
-            if operator == END || operator == CLOSE_PAREN || operator == COMMA {
+        if !operator.is_binary() {
+            if operator == Token::End
+                || operator == Token::CloseParen
+                || operator == Token::Comma
+            {
                 return Ok(value);
             } else {
                 return syntax_error(info);
             }
         }
 
-        if PREC_TABLE[operator as usize] <= prec {
+        if operator.precedence() <= prec {
             return Ok(value);
         }
 
-        // If we're doing an AND or OR and the first operand already determines
+        // If we're doing an Token::And or Token::Or and the first operand already determines
         // the result, don't execute anything in the second operand: just parse.
         // Same style for ?: pairs.
 
-        if operator == AND || operator == OR || operator == QUESTY {
+        if operator == Token::And || operator == Token::Or || operator == Token::Question
+        {
             // For these operators, we need an integer value.  Convert or return
             // an error.
-            match value.vtype {
-                Type::Float => {
-                    if value.flt == 0.0 {
-                        value = Datum::int(0);
-                    } else {
-                        value = Datum::int(1);
-                    }
-                }
-                Type::String => {
+            value = match value {
+                Datum::Int(value) => Datum::int(value),
+                Datum::Float(value) => Datum::int(MoltInt::from(value != 0.0)),
+                Datum::String(_) => {
                     if info.no_eval == 0 {
-                        return illegal_type(value.vtype, operator);
+                        return illegal_type(Type::String, operator);
                     }
-                    value = Datum::int(0);
+                    Datum::int(0)
                 }
-                _ => {}
-            }
+            };
 
-            if (operator == AND && !value.is_true())
-                || (operator == OR && value.is_true())
+            if (operator == Token::And && !value.is_true())
+                || (operator == Token::Or && value.is_true())
             {
                 // Short-circuit; we don't care about the next operand, but it must be
                 // syntactically correct.
                 info.no_eval += 1;
-                let _ = expr_get_value(interp, info, PREC_TABLE[operator as usize])?;
+                let _ = expr_get_value(interp, info, operator.precedence())?;
                 info.no_eval -= 1;
 
-                if operator == OR {
+                if operator == Token::Or {
                     value = Datum::int(1);
                 }
 
                 // Go on to the next operator.
                 continue;
-            } else if operator == QUESTY {
+            } else if operator == Token::Question {
                 // Special note: ?: operators must associate right to left.  To make
-                // this happen, use a precedence one lower than QUESTY when calling
+                // this happen, use a precedence one lower than Token::Question when calling
                 // expr_get_value recursively.
-                if value.int != 0 {
+                if value.is_true() {
                     value =
-                        expr_get_value(interp, info, PREC_TABLE[QUESTY as usize] - 1)?;
+                        expr_get_value(interp, info, Token::Question.precedence() - 1)?;
 
-                    if info.token != COLON {
+                    if info.token != Token::Colon {
                         return syntax_error(info);
                     }
 
                     info.no_eval += 1;
                     value2 =
-                        expr_get_value(interp, info, PREC_TABLE[QUESTY as usize] - 1)?;
+                        expr_get_value(interp, info, Token::Question.precedence() - 1)?;
                     info.no_eval -= 1;
                 } else {
                     info.no_eval += 1;
                     value2 =
-                        expr_get_value(interp, info, PREC_TABLE[QUESTY as usize] - 1)?;
+                        expr_get_value(interp, info, Token::Question.precedence() - 1)?;
                     info.no_eval -= 1;
 
-                    if info.token != COLON {
+                    if info.token != Token::Colon {
                         return syntax_error(info);
                     }
 
                     value =
-                        expr_get_value(interp, info, PREC_TABLE[QUESTY as usize] - 1)?;
+                        expr_get_value(interp, info, Token::Question.precedence() - 1)?;
                 }
             } else {
-                value2 = expr_get_value(interp, info, PREC_TABLE[operator as usize])?;
+                value2 = expr_get_value(interp, info, operator.precedence())?;
             }
         } else {
-            value2 = expr_get_value(interp, info, PREC_TABLE[operator as usize])?;
+            value2 = expr_get_value(interp, info, operator.precedence())?;
         }
 
-        if info.token < MULT
-            && info.token != VALUE
-            && info.token != END
-            && info.token != COMMA
-            && info.token != CLOSE_PAREN
+        if !info.token.is_binary()
+            && !matches!(
+                info.token,
+                Token::Value | Token::End | Token::Comma | Token::CloseParen
+            )
         {
             return syntax_error(info);
         }
@@ -505,301 +460,212 @@ fn expr_get_value<'a, Ctx: 'static>(
             continue;
         }
 
-        // At this point we've got two values and an operator.  Check to make sure that the
-        // particular data types are appropriate for the particular operator, and perform
-        // type conversion if necessary.
-
-        match operator {
-            // For the operators below, no strings are allowed and ints get converted to
-            // floats if necessary.
-            MULT | DIVIDE | PLUS | MINUS => {
-                if value.vtype == Type::String || value2.vtype == Type::String {
-                    return illegal_type(Type::String, operator);
-                }
-
-                if value.vtype == Type::Float {
-                    if value2.vtype == Type::Int {
-                        value2.flt = value2.int as MoltFloat;
-                        value2.vtype = Type::Float;
-                    }
-                } else if value2.vtype == Type::Float {
-                    if value.vtype == Type::Int {
-                        value.flt = value.int as MoltFloat;
-                        value.vtype = Type::Float;
-                    }
-                }
-            }
-
-            // For the operators below, only integers are allowed.
-            MOD | LEFT_SHIFT | RIGHT_SHIFT | BIT_AND | BIT_XOR | BIT_OR => {
-                if value.vtype != Type::Int {
-                    return illegal_type(value.vtype, operator);
-                } else if value2.vtype != Type::Int {
-                    return illegal_type(value2.vtype, operator);
-                }
-            }
-
-            // For the operators below, any type is allowed, but the operators must have
-            // the same type.
-            LESS | GREATER | LEQ | GEQ | EQUAL | NEQ => {
-                if value.vtype == Type::String {
-                    if value2.vtype != Type::String {
-                        value2 = expr_as_str(value2);
-                    }
-                } else if value2.vtype == Type::String {
-                    if value.vtype != Type::String {
-                        value = expr_as_str(value);
-                    }
-                } else if value.vtype == Type::Float {
-                    if value2.vtype == Type::Int {
-                        value2 = Datum::float(value2.int as MoltFloat);
-                    }
-                } else if value2.vtype == Type::Float {
-                    if value.vtype == Type::Int {
-                        value = Datum::float(value.int as MoltFloat);
-                    }
-                }
-            }
-
-            // For the operators below, everything's treated as a string.
-            // For IN and NI, the second value is a list, but we'll parse it as a list
-            // as part of evaluation.
-            STRING_EQ | STRING_NE | IN | NI => {
-                if value.vtype != Type::String {
-                    value = expr_as_str(value);
-                }
-                if value2.vtype != Type::String {
-                    value2 = expr_as_str(value2);
-                }
-            }
-
-            // For the operators below, no strings are allowed, but no int->float conversions
-            // are performed.
-            AND | OR => {
-                if value.vtype == Type::String {
-                    return illegal_type(value.vtype, operator);
-                }
-                if value2.vtype == Type::String {
-                    return illegal_type(value2.vtype, operator);
-                }
-            }
-
-            // For the operators below, type and conversions are irrelevant: they're
-            // handled elsewhere.
-            QUESTY | COLON => {
-                // Nothing to do
-            }
-
-            _ => return molt_err!("unknown operator in expression"),
-        }
-
         // Carry out the function of the specified operator.
         match operator {
-            MULT => {
-                if value.vtype == Type::Int {
-                    // value.int *= value2.int
-                    if let Some(int) = value.int.checked_mul(value2.int) {
-                        value.int = int;
-                    } else {
-                        return molt_err!("integer overflow");
-                    }
-                } else {
-                    value.flt *= value2.flt;
-                }
+            Token::Multiply
+            | Token::Divide
+            | Token::Modulo
+            | Token::Plus
+            | Token::Minus
+            | Token::LeftShift
+            | Token::RightShift => {
+                value = eval_arithmetic(operator, value, value2)?;
             }
-            DIVIDE => {
-                if value.vtype == Type::Int {
-                    if value2.int == 0 {
-                        return molt_err!("divide by zero");
-                    }
-
-                    if let Some(int) = value.int.checked_div(value2.int) {
-                        value.int = int;
-                    } else {
-                        return molt_err!("integer overflow");
-                    }
-                } else {
-                    if value2.flt == 0.0 {
-                        // TODO: return Inf or -Inf?  Waiting for response from KBK
-                        return molt_err!("divide by zero");
-                    }
-                    value.flt /= value2.flt;
-                }
+            Token::Less
+            | Token::Greater
+            | Token::LessOrEqual
+            | Token::GreaterOrEqual
+            | Token::Equal
+            | Token::NotEqual => {
+                value = Datum::int(MoltInt::from(compare(operator, value, value2)));
             }
-            MOD => {
-                assert!(value.vtype == Type::Int);
-
-                if value2.int == 0 {
-                    return molt_err!("divide by zero");
-                }
-
-                if let Some(int) = value.int.checked_rem(value2.int) {
-                    value.int = int;
-                } else {
-                    return molt_err!("integer overflow");
-                }
-            }
-            PLUS => {
-                if value.vtype == Type::Int {
-                    // value.int += value2.int;
-                    if let Some(int) = value.int.checked_add(value2.int) {
-                        value.int = int;
-                    } else {
-                        return molt_err!("integer overflow");
-                    }
-                } else {
-                    value.flt += value2.flt;
-                }
-            }
-            MINUS => {
-                if value.vtype == Type::Int {
-                    // value.int -= value2.int;
-                    if let Some(int) = value.int.checked_sub(value2.int) {
-                        value.int = int;
-                    } else {
-                        return molt_err!("integer overflow");
-                    }
-                } else {
-                    value.flt -= value2.flt;
-                }
-            }
-            LEFT_SHIFT => {
-                // TODO: Use checked_shl
-                value.int <<= value2.int;
-            }
-            RIGHT_SHIFT => {
-                // The following code is a bit tricky:  it ensures that
-                // right shifts propagate the sign bit even on machines
-                // where ">>" won't do it by default.
-                // WHD: Not sure if this is an issue in Rust.
-
-                // TODO: Use checked_shr
-                if value.int < 0 {
-                    value.int = !((!value.int) >> value2.int)
-                } else {
-                    value.int >>= value2.int;
-                }
-            }
-            LESS => {
-                let flag = match value.vtype {
-                    Type::Int => value.int < value2.int,
-                    Type::Float => value.flt < value2.flt,
-                    Type::String => value.str < value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            GREATER => {
-                let flag = match value.vtype {
-                    Type::Int => value.int > value2.int,
-                    Type::Float => value.flt > value2.flt,
-                    Type::String => value.str > value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            LEQ => {
-                let flag = match value.vtype {
-                    Type::Int => value.int <= value2.int,
-                    Type::Float => value.flt <= value2.flt,
-                    Type::String => value.str <= value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            GEQ => {
-                let flag = match value.vtype {
-                    Type::Int => value.int >= value2.int,
-                    Type::Float => value.flt >= value2.flt,
-                    Type::String => value.str >= value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            EQUAL => {
-                // NOTE: comparing floats using == is dangerous; but Tcl leaves that to the
-                // TCL programmer.
-                let flag = match value.vtype {
-                    Type::Int => value.int == value2.int,
-                    Type::Float => value.flt == value2.flt,
-                    Type::String => value.str == value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            NEQ => {
-                // NOTE: comparing floats using == is dangerous; but Tcl leaves that to the
-                // TCL programmer.
-                let flag = match value.vtype {
-                    Type::Int => value.int != value2.int,
-                    Type::Float => value.flt != value2.flt,
-                    Type::String => value.str != value2.str,
-                };
-
-                value = if flag { Datum::int(1) } else { Datum::int(0) };
-            }
-            STRING_EQ => {
+            Token::StringEqual | Token::StringNotEqual => {
+                let equal = value.into_string() == value2.into_string();
                 value =
-                    if value.str == value2.str { Datum::int(1) } else { Datum::int(0) };
+                    Datum::int(MoltInt::from(equal == (operator == Token::StringEqual)));
             }
-            STRING_NE => {
-                value =
-                    if value.str != value2.str { Datum::int(1) } else { Datum::int(0) };
+            Token::In | Token::NotIn => {
+                let needle = value.into_string();
+                let list = list::get_list(&value2.into_string())?;
+                let contains = list.iter().any(|item| item.as_str() == needle);
+                value = Datum::int(MoltInt::from(contains == (operator == Token::In)));
             }
-            IN => {
-                let list = list::get_list(&value2.str)?;
-                // TODO: Need a better MoltList contains() method.
-                value = if list.contains(&Value::from(&value.str)) {
-                    Datum::int(1)
-                } else {
-                    Datum::int(0)
-                };
+            Token::BitAnd | Token::BitXor | Token::BitOr => {
+                value = eval_bitwise(operator, value, value2)?;
             }
-            NI => {
-                let list = list::get_list(&value2.str)?;
-                // TODO: Need a better MoltList contains() method.
-                value = if list.contains(&Value::from(&value.str)) {
-                    Datum::int(0)
-                } else {
-                    Datum::int(1)
-                };
-            }
-            BIT_AND => {
-                value.int &= value2.int;
-            }
-            BIT_XOR => {
-                value.int ^= value2.int;
-            }
-            BIT_OR => {
-                value.int |= value2.int;
+            Token::And | Token::Or => {
+                let left = numeric_truth(&value, operator)?;
+                let right = numeric_truth(&value2, operator)?;
+                let result =
+                    if operator == Token::And { left && right } else { left || right };
+                value = Datum::int(MoltInt::from(result));
             }
 
-            // For AND and OR, we know that the first value has already been converted to
-            // an integer.  Thus we need only consider the possibility of int vs. double
-            // for the second value.
-            AND => {
-                if value2.vtype == Type::Float {
-                    value2.vtype = Type::Int;
-                    value2.int = if value2.flt != 0.0 { 1 } else { 0 };
-                }
-                value.int = if value.int != 0 && value2.int != 0 { 1 } else { 0 };
-            }
-            OR => {
-                if value2.vtype == Type::Float {
-                    value2.vtype = Type::Int;
-                    value2.int = if value2.flt != 0.0 { 1 } else { 0 };
-                }
-                value.int = if value.int != 0 || value2.int != 0 { 1 } else { 0 };
-            }
-
-            COLON => {
+            Token::Colon => {
                 return molt_err!("can't have : operator without ? first");
             }
 
-            _ => {
-                // Nothing to do.
+            Token::Question => {}
+            _ => unreachable!("non-binary token reached operator dispatch"),
+        }
+    }
+}
+
+fn eval_unary(operator: Token, value: Datum) -> DatumResult {
+    match (operator, value) {
+        (Token::UnaryMinus, Datum::Int(value)) => value
+            .checked_neg()
+            .map(Datum::int)
+            .ok_or_else(|| Exception::molt_err(Value::from("integer overflow"))),
+        (Token::UnaryMinus, Datum::Float(value)) => Ok(Datum::float(-value)),
+        (Token::UnaryMinus, Datum::String(_)) => illegal_type(Type::String, operator),
+        (Token::UnaryPlus, value) if value.is_numeric() => Ok(value),
+        (Token::UnaryPlus, value) => illegal_type(value.value_type(), operator),
+        (Token::Not, Datum::Int(value)) => Ok(Datum::int(MoltInt::from(value == 0))),
+        (Token::Not, Datum::Float(value)) => Ok(Datum::int(MoltInt::from(value == 0.0))),
+        (Token::Not, Datum::String(_)) => illegal_type(Type::String, operator),
+        (Token::BitNot, Datum::Int(value)) => Ok(Datum::int(!value)),
+        (Token::BitNot, value) => illegal_type(value.value_type(), operator),
+        _ => unreachable!("non-unary token reached unary dispatch"),
+    }
+}
+
+fn eval_arithmetic(operator: Token, left: Datum, right: Datum) -> DatumResult {
+    match (left, right) {
+        (Datum::String(_), _) | (_, Datum::String(_)) => {
+            illegal_type(Type::String, operator)
+        }
+        (Datum::Int(left), Datum::Int(right)) => {
+            let value = match operator {
+                Token::Multiply => left.checked_mul(right),
+                Token::Divide if right == 0 => return molt_err!("divide by zero"),
+                Token::Divide => left.checked_div(right),
+                Token::Modulo if right == 0 => return molt_err!("divide by zero"),
+                Token::Modulo => left.checked_rem(right),
+                Token::Plus => left.checked_add(right),
+                Token::Minus => left.checked_sub(right),
+                Token::LeftShift => Some(left << right),
+                Token::RightShift => Some(left >> right),
+                _ => return molt_err!("unknown operator in expression"),
+            };
+            value
+                .map(Datum::int)
+                .ok_or_else(|| Exception::molt_err(Value::from("integer overflow")))
+        }
+        (left, right) => {
+            if matches!(operator, Token::Modulo | Token::LeftShift | Token::RightShift) {
+                let bad_type = if matches!(left, Datum::Float(_)) {
+                    Type::Float
+                } else {
+                    right.value_type()
+                };
+                return illegal_type(bad_type, operator);
+            }
+
+            let left = match left {
+                Datum::Int(value) => value as MoltFloat,
+                Datum::Float(value) => value,
+                Datum::String(_) => unreachable!(),
+            };
+            let right = match right {
+                Datum::Int(value) => value as MoltFloat,
+                Datum::Float(value) => value,
+                Datum::String(_) => unreachable!(),
+            };
+            if operator == Token::Divide && right == 0.0 {
+                return molt_err!("divide by zero");
+            }
+            Ok(Datum::float(match operator {
+                Token::Multiply => left * right,
+                Token::Divide => left / right,
+                Token::Plus => left + right,
+                Token::Minus => left - right,
+                _ => unreachable!(),
+            }))
+        }
+    }
+}
+
+fn eval_bitwise(operator: Token, left: Datum, right: Datum) -> DatumResult {
+    let left = match left {
+        Datum::Int(value) => value,
+        value => return illegal_type(value.value_type(), operator),
+    };
+    let right = match right {
+        Datum::Int(value) => value,
+        value => return illegal_type(value.value_type(), operator),
+    };
+    Ok(Datum::int(match operator {
+        Token::BitAnd => left & right,
+        Token::BitXor => left ^ right,
+        Token::BitOr => left | right,
+        _ => unreachable!(),
+    }))
+}
+
+fn numeric_truth(value: &Datum, operator: Token) -> Result<bool, Exception> {
+    match value {
+        Datum::Int(value) => Ok(*value != 0),
+        Datum::Float(value) => Ok(*value != 0.0),
+        Datum::String(_) => illegal_type(Type::String, operator).map(|_| false),
+    }
+}
+
+#[allow(clippy::float_cmp)]
+fn compare(operator: Token, left: Datum, right: Datum) -> bool {
+    match (left, right) {
+        (Datum::String(left), right) => {
+            compare_strings(operator, &left, &right.into_string())
+        }
+        (left, Datum::String(right)) => {
+            compare_strings(operator, &left.into_string(), &right)
+        }
+        (Datum::Int(left), Datum::Int(right)) => compare_ints(operator, left, right),
+        (left, right) => {
+            let left = match left {
+                Datum::Int(value) => value as MoltFloat,
+                Datum::Float(value) => value,
+                Datum::String(_) => unreachable!(),
+            };
+            let right = match right {
+                Datum::Int(value) => value as MoltFloat,
+                Datum::Float(value) => value,
+                Datum::String(_) => unreachable!(),
+            };
+            match operator {
+                Token::Less => left < right,
+                Token::Greater => left > right,
+                Token::LessOrEqual => left <= right,
+                Token::GreaterOrEqual => left >= right,
+                Token::Equal => left == right,
+                Token::NotEqual => left != right,
+                _ => unreachable!(),
             }
         }
+    }
+}
+
+fn compare_ints(operator: Token, left: MoltInt, right: MoltInt) -> bool {
+    match operator {
+        Token::Less => left < right,
+        Token::Greater => left > right,
+        Token::LessOrEqual => left <= right,
+        Token::GreaterOrEqual => left >= right,
+        Token::Equal => left == right,
+        Token::NotEqual => left != right,
+        _ => unreachable!(),
+    }
+}
+
+fn compare_strings(operator: Token, left: &str, right: &str) -> bool {
+    match operator {
+        Token::Less => left < right,
+        Token::Greater => left > right,
+        Token::LessOrEqual => left <= right,
+        Token::GreaterOrEqual => left >= right,
+        Token::Equal => left == right,
+        Token::NotEqual => left != right,
+        _ => unreachable!(),
     }
 }
 
@@ -810,9 +676,8 @@ fn expr_get_value<'a, Ctx: 'static>(
 ///
 /// Returns an error result if an error occurs while doing lexical analysis or
 /// executing an embedded command.  On success, info.token is set to the last token type,
-/// and info is updated to point to the next token.  If the token is VALUE, the returned
+/// and info is updated to point to the next token.  If the token is Token::Value, the returned
 /// Datum contains it.
-
 fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> DatumResult {
     // FIRST, skip white space.
     let mut p = info.expr.clone();
@@ -820,7 +685,7 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
     p.skip_while(|c| c.is_whitespace());
 
     if p.at_end() {
-        info.token = END;
+        info.token = Token::End;
         info.expr = p;
         return Ok(Datum::none());
     }
@@ -835,11 +700,11 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             // There's definitely an integer to parse; parse it.
             let token = util::read_int(&mut p).unwrap();
             let int = Value::get_int(&token)?;
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = p;
             return Ok(Datum::int(int));
         } else if let Some(token) = util::read_float(&mut p) {
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = p;
             return Ok(Datum::float(Value::get_float(&token)?));
         }
@@ -854,7 +719,7 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             let mut ctx = EvalPtr::from_tokenizer(&p);
             ctx.set_no_eval(info.no_eval > 0);
             let var_val = parse_and_eval_variable(interp, &mut ctx)?;
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = ctx.to_tokenizer();
             if info.no_eval > 0 {
                 Ok(Datum::none())
@@ -866,7 +731,7 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             let mut ctx = EvalPtr::from_tokenizer(&p);
             ctx.set_no_eval(info.no_eval > 0);
             let script_val = parse_and_eval_script(interp, &mut ctx)?;
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = ctx.to_tokenizer();
             if info.no_eval > 0 {
                 Ok(Datum::none())
@@ -878,7 +743,7 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             let mut ctx = EvalPtr::from_tokenizer(&p);
             ctx.set_no_eval(info.no_eval > 0);
             let val = parse_and_eval_quoted_word(interp, &mut ctx)?;
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = ctx.to_tokenizer();
             if info.no_eval > 0 {
                 Ok(Datum::none())
@@ -892,7 +757,7 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             let mut ctx = EvalPtr::from_tokenizer(&p);
             ctx.set_no_eval(info.no_eval > 0);
             let val = parse_and_eval_braced_word(&mut ctx)?;
-            info.token = VALUE;
+            info.token = Token::Value;
             info.expr = ctx.to_tokenizer();
             if info.no_eval > 0 {
                 Ok(Datum::none())
@@ -903,62 +768,62 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             }
         }
         Some('(') => {
-            info.token = OPEN_PAREN;
+            info.token = Token::OpenParen;
             Ok(Datum::none())
         }
         Some(')') => {
-            info.token = CLOSE_PAREN;
+            info.token = Token::CloseParen;
             Ok(Datum::none())
         }
         Some(',') => {
-            info.token = COMMA;
+            info.token = Token::Comma;
             Ok(Datum::none())
         }
         Some('*') => {
-            info.token = MULT;
+            info.token = Token::Multiply;
             Ok(Datum::none())
         }
         Some('/') => {
-            info.token = DIVIDE;
+            info.token = Token::Divide;
             Ok(Datum::none())
         }
         Some('%') => {
-            info.token = MOD;
+            info.token = Token::Modulo;
             Ok(Datum::none())
         }
         Some('+') => {
-            info.token = PLUS;
+            info.token = Token::Plus;
             Ok(Datum::none())
         }
         Some('-') => {
-            info.token = MINUS;
+            info.token = Token::Minus;
             Ok(Datum::none())
         }
         Some('?') => {
-            info.token = QUESTY;
+            info.token = Token::Question;
             Ok(Datum::none())
         }
         Some(':') => {
-            info.token = COLON;
+            info.token = Token::Colon;
             Ok(Datum::none())
         }
         Some('<') => {
             p.skip();
             match p.peek() {
                 Some('<') => {
-                    info.token = LEFT_SHIFT;
+                    info.token = Token::LeftShift;
                     p.skip();
                     info.expr = p;
                     Ok(Datum::none())
                 }
                 Some('=') => {
-                    info.token = LEQ;
+                    info.token = Token::LessOrEqual;
                     p.skip();
                     info.expr = p;
                     Ok(Datum::none())
                 }
                 _ => {
-                    info.token = LESS;
+                    info.token = Token::Less;
                     Ok(Datum::none())
                 }
             }
@@ -967,19 +832,19 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             p.skip();
             match p.peek() {
                 Some('>') => {
-                    info.token = RIGHT_SHIFT;
+                    info.token = Token::RightShift;
                     p.skip();
                     info.expr = p;
                     Ok(Datum::none())
                 }
                 Some('=') => {
-                    info.token = GEQ;
+                    info.token = Token::GreaterOrEqual;
                     p.skip();
                     info.expr = p;
                     Ok(Datum::none())
                 }
                 _ => {
-                    info.token = GREATER;
+                    info.token = Token::Greater;
                     Ok(Datum::none())
                 }
             }
@@ -987,111 +852,110 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
         Some('=') => {
             p.skip();
             if let Some('=') = p.peek() {
-                info.token = EQUAL;
+                info.token = Token::Equal;
                 p.skip();
                 info.expr = p;
             } else {
-                info.token = UNKNOWN;
+                info.token = Token::Unknown;
             }
             Ok(Datum::none())
         }
         Some('!') => {
             p.skip();
             if let Some('=') = p.peek() {
-                info.token = NEQ;
+                info.token = Token::NotEqual;
                 p.skip();
                 info.expr = p;
             } else {
-                info.token = NOT;
+                info.token = Token::Not;
             }
             Ok(Datum::none())
         }
         Some('&') => {
             p.skip();
             if let Some('&') = p.peek() {
-                info.token = AND;
+                info.token = Token::And;
                 p.skip();
                 info.expr = p;
             } else {
-                info.token = BIT_AND;
+                info.token = Token::BitAnd;
             }
             Ok(Datum::none())
         }
         Some('^') => {
-            info.token = BIT_XOR;
+            info.token = Token::BitXor;
             Ok(Datum::none())
         }
         Some('|') => {
             p.skip();
             if let Some('|') = p.peek() {
-                info.token = OR;
+                info.token = Token::Or;
                 p.skip();
                 info.expr = p;
             } else {
-                info.token = BIT_OR;
+                info.token = Token::BitOr;
             }
             Ok(Datum::none())
         }
         Some('~') => {
-            info.token = BIT_NOT;
+            info.token = Token::BitNot;
             Ok(Datum::none())
         }
-        Some(_) => {
-            if p.has(|c| c.is_alphabetic()) {
-                let mut str = String::new();
-                while p.has(|c| c.is_alphabetic() || c.is_digit(10)) {
-                    str.push(p.next().unwrap());
-                }
-
-                // NOTE: Could use get_boolean to test for the boolean constants, but it's
-                // probably overkill.
-                match str.as_ref() {
-                    "true" | "yes" | "on" => {
-                        info.expr = p;
-                        info.token = VALUE;
-                        Ok(Datum::int(1))
-                    }
-                    "false" | "no" | "off" => {
-                        info.expr = p;
-                        info.token = VALUE;
-                        Ok(Datum::int(0))
-                    }
-                    "eq" => {
-                        info.expr = p;
-                        info.token = STRING_EQ;
-                        Ok(Datum::none())
-                    }
-                    "ne" => {
-                        info.expr = p;
-                        info.token = STRING_NE;
-                        Ok(Datum::none())
-                    }
-                    "in" => {
-                        info.expr = p;
-                        info.token = IN;
-                        Ok(Datum::none())
-                    }
-                    "ni" => {
-                        info.expr = p;
-                        info.token = NI;
-                        Ok(Datum::none())
-                    }
-                    _ => {
-                        info.expr = p;
-                        expr_math_func(interp, info, &str)
-                    }
-                }
-            } else {
-                p.skip();
-                info.expr = p;
-                info.token = UNKNOWN;
-                Ok(Datum::none())
+        Some(_) if p.has(|c| c.is_alphabetic()) => {
+            let mut str = String::new();
+            while p.has(|c| c.is_alphabetic() || c.is_ascii_digit()) {
+                str.push(p.next().unwrap());
             }
+
+            // NOTE: Could use get_boolean to test for the boolean constants, but it's
+            // probably overkill.
+            match str.as_ref() {
+                "true" | "yes" | "on" => {
+                    info.expr = p;
+                    info.token = Token::Value;
+                    Ok(Datum::int(1))
+                }
+                "false" | "no" | "off" => {
+                    info.expr = p;
+                    info.token = Token::Value;
+                    Ok(Datum::int(0))
+                }
+                "eq" => {
+                    info.expr = p;
+                    info.token = Token::StringEqual;
+                    Ok(Datum::none())
+                }
+                "ne" => {
+                    info.expr = p;
+                    info.token = Token::StringNotEqual;
+                    Ok(Datum::none())
+                }
+                "in" => {
+                    info.expr = p;
+                    info.token = Token::In;
+                    Ok(Datum::none())
+                }
+                "ni" => {
+                    info.expr = p;
+                    info.token = Token::NotIn;
+                    Ok(Datum::none())
+                }
+                _ => {
+                    info.expr = p;
+                    expr_math_func(interp, info, &str)
+                }
+            }
+        }
+        Some(_) => {
+            p.skip();
+            info.expr = p;
+            info.token = Token::Unknown;
+            Ok(Datum::none())
         }
         None => {
             p.skip();
             info.expr = p;
-            info.token = UNKNOWN;
+            info.token = Token::Unknown;
             Ok(Datum::none())
         }
     }
@@ -1178,80 +1042,29 @@ fn parse_and_eval_braced_word(ctx: &mut EvalPtr) -> MoltResult {
 }
 
 /// Parses math functions, returning the evaluated value.
-#[allow(clippy::needless_range_loop)]
 fn expr_math_func<Ctx>(
     interp: &mut Interp<Ctx>,
     info: &mut ExprInfo,
     func_name: &str,
 ) -> DatumResult {
-    // FIRST, is this actually a function?
-    // TODO: this does a linear search of the FUNC_TABLE.  Ultimately, it should probably
-    // be a hash lookup.  And if we want to allow users to add functions, it should be
-    // kept in the Interp.
-    let bfunc = expr_find_func(func_name)?;
+    let function = BuiltinFunc::from_name(func_name)?;
 
     // NEXT, get the open paren.
     let _ = expr_lex(interp, info)?;
 
-    if info.token != OPEN_PAREN {
+    if info.token != Token::OpenParen {
         return syntax_error(info);
     }
 
-    // NEXT, scan off the arguments for the function, if there are any.
-    let mut args: [Datum; MAX_MATH_ARGS] = [Datum::none(), Datum::none()];
-
-    if bfunc.num_args == 0 {
-        let _ = expr_lex(interp, info)?;
-        if info.token != OPEN_PAREN {
-            return syntax_error(info);
-        }
-    } else {
-        for i in 0..bfunc.num_args {
-            let arg = expr_get_value(interp, info, -1)?;
-
-            // At present we have no string functions.
-            if arg.vtype == Type::String {
-                return molt_err!("argument to math function didn't have numeric value");
-            }
-
-            // Copy the value to the argument record, converting it if necessary.
-            if arg.vtype == Type::Int {
-                if bfunc.arg_types[i] == ArgType::Float {
-                    args[i] = Datum::float(arg.int as MoltFloat);
-                } else {
-                    args[i] = arg;
-                }
-            } else {
-                // Type::Float
-                if bfunc.arg_types[i] == ArgType::Int {
-                    // TODO: Need to handle overflow?
-                    args[i] = Datum::int(arg.flt as MoltInt);
-                } else {
-                    args[i] = arg;
-                }
-            }
-
-            // Check for a comma separator between arguments or a close-paren to end
-            // the argument list.
-            if i == bfunc.num_args - 1 {
-                if info.token == CLOSE_PAREN {
-                    break;
-                }
-                if info.token == COMMA {
-                    return molt_err!("too many arguments for math function");
-                } else {
-                    return syntax_error(info);
-                }
-            }
-
-            if info.token != COMMA {
-                if info.token == CLOSE_PAREN {
-                    return molt_err!("too few arguments for math function");
-                } else {
-                    return syntax_error(info);
-                }
-            }
-        }
+    let argument = expr_get_value(interp, info, -1)?;
+    if info.token == Token::Comma {
+        return molt_err!("too many arguments for math function");
+    }
+    if info.token != Token::CloseParen {
+        return syntax_error(info);
+    }
+    if info.no_eval == 0 && !argument.is_numeric() {
+        return molt_err!("argument to math function didn't have numeric value");
     }
 
     // NEXT, if we aren't evaluating, return an empty value.
@@ -1260,20 +1073,44 @@ fn expr_math_func<Ctx>(
     }
 
     // NEXT, invoke the math function.
-    info.token = VALUE;
-    (bfunc.func)(&args)
+    info.token = Token::Value;
+    function.execute(argument)
 }
 
-// Find the function in the table.
-// TODO: Really, functions should be registered with the interpreter.
-fn expr_find_func(func_name: &str) -> Result<&'static BuiltinFunc, Exception> {
-    for bfunc in &FUNC_TABLE {
-        if bfunc.name == func_name {
-            return Ok(bfunc);
+impl BuiltinFunc {
+    fn from_name(name: &str) -> Result<Self, Exception> {
+        match name {
+            "abs" => Ok(Self::Abs),
+            "double" => Ok(Self::Double),
+            "int" => Ok(Self::Int),
+            "round" => Ok(Self::Round),
+            _ => molt_err!("unknown math function \"{}\"", name),
         }
     }
 
-    molt_err!("unknown math function \"{}\"", func_name)
+    fn execute(self, argument: Datum) -> DatumResult {
+        match (self, argument) {
+            (Self::Abs, Datum::Int(value)) => value
+                .checked_abs()
+                .map(Datum::int)
+                .ok_or_else(|| Exception::molt_err(Value::from("integer overflow"))),
+            (Self::Abs, Datum::Float(value)) => Ok(Datum::float(value.abs())),
+            (Self::Double, Datum::Int(value)) => Ok(Datum::float(value as MoltFloat)),
+            (Self::Double, Datum::Float(value)) => Ok(Datum::float(value)),
+            (Self::Int, Datum::Int(value)) => Ok(Datum::int(value)),
+            (Self::Int, Datum::Float(value)) => Ok(Datum::int(value as MoltInt)),
+            (Self::Round, Datum::Int(value)) => Ok(Datum::int(value)),
+            (Self::Round, Datum::Float(value)) if value < 0.0 => {
+                Ok(Datum::int((value - 0.5) as MoltInt))
+            }
+            (Self::Round, Datum::Float(value)) => {
+                Ok(Datum::int((value + 0.5) as MoltInt))
+            }
+            (_, Datum::String(_)) => {
+                molt_err!("argument to math function didn't have numeric value")
+            }
+        }
+    }
 }
 
 /// If the value already has a numeric data rep, just gets it as a Datum; otherwise,
@@ -1337,15 +1174,6 @@ fn expr_parse_string(string: &str) -> DatumResult {
     Ok(Datum::string(string))
 }
 
-// Converts values to strings for string comparisons.
-fn expr_as_str(value: Datum) -> Datum {
-    match value.vtype {
-        Type::Int => Datum::string(&format!("{}", value.int)),
-        Type::Float => Datum::string(&format!("{}", value.flt)),
-        _ => value,
-    }
-}
-
 // Distinguished between decimal integers and floating-point values
 fn expr_looks_like_int<'a>(ptr: &Tokenizer<'a>) -> bool {
     // FIRST, skip whitespace
@@ -1356,76 +1184,16 @@ fn expr_looks_like_int<'a>(ptr: &Tokenizer<'a>) -> bool {
         p.skip();
     }
 
-    if !p.has(|ch| ch.is_digit(10)) {
+    if !p.has(|ch| ch.is_ascii_digit()) {
         return false;
     }
     p.skip();
 
-    while p.has(|ch| ch.is_digit(10)) {
+    while p.has(|ch| ch.is_ascii_digit()) {
         p.skip();
     }
 
     !p.is('.') && !p.is('e') && !p.is('E')
-}
-
-impl Datum {
-    fn is_numeric(&self) -> bool {
-        match self.vtype {
-            Type::Int => true,
-            Type::Float => true,
-            Type::String => false,
-        }
-    }
-}
-
-#[allow(clippy::collapsible_if)]
-fn expr_abs_func(args: &[Datum; MAX_MATH_ARGS]) -> DatumResult {
-    let arg = &args[0];
-    if arg.vtype == Type::Float {
-        if arg.flt < 0.0 {
-            Ok(Datum::float(-arg.flt))
-        } else {
-            Ok(Datum::float(arg.flt))
-        }
-    } else {
-        // TODO: need to handle integer overflow here.
-        if arg.int < 0 {
-            Ok(Datum::int(-arg.int))
-        } else {
-            Ok(Datum::int(arg.int))
-        }
-    }
-}
-
-fn expr_double_func(args: &[Datum; MAX_MATH_ARGS]) -> DatumResult {
-    let arg = &args[0];
-    if arg.vtype == Type::Float {
-        Ok(Datum::float(arg.flt))
-    } else {
-        Ok(Datum::float(arg.int as MoltFloat))
-    }
-}
-
-fn expr_int_func(args: &[Datum; MAX_MATH_ARGS]) -> DatumResult {
-    let arg = &args[0];
-    if arg.vtype == Type::Int {
-        Ok(Datum::int(arg.int))
-    } else {
-        // TODO: need to handle integer overflow here.
-        Ok(Datum::int(arg.flt as MoltInt))
-    }
-}
-
-fn expr_round_func(args: &[Datum; MAX_MATH_ARGS]) -> DatumResult {
-    // TODO: need to handle integer overflow here.
-    let arg = &args[0];
-    if arg.vtype == Type::Int {
-        Ok(Datum::int(arg.int))
-    } else if arg.flt < 0.0 {
-        Ok(Datum::int((arg.flt - 0.5) as MoltInt))
-    } else {
-        Ok(Datum::int((arg.flt + 0.5) as MoltInt))
-    }
 }
 
 // Return standard syntax error
@@ -1434,111 +1202,39 @@ fn syntax_error(info: &mut ExprInfo) -> DatumResult {
 }
 
 // Return standard illegal type error
-fn illegal_type(bad_type: Type, op: i32) -> DatumResult {
+fn illegal_type(bad_type: Type, op: Token) -> DatumResult {
     let type_str = if bad_type == Type::Float {
         "floating-point value"
     } else {
         "non-numeric string"
     };
 
-    molt_err!("can't use {} as operand of \"{}\"", type_str, OP_STRINGS[op as usize])
+    molt_err!("can't use {} as operand of \"{}\"", type_str, op.as_str())
 }
 
-// #[cfg(test)]
-// mod tests {
-//   use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//   fn call_expr_looks_like_int(str: &str) -> bool {
-//     let p = Tokenizer::new(str);
+    #[test]
+    fn token_metadata_distinguishes_operator_kinds() {
+        assert!(Token::Multiply.is_binary());
+        assert!(!Token::Multiply.is_unary());
+        assert!(Token::UnaryMinus.is_unary());
+        assert!(!Token::UnaryMinus.is_binary());
+        assert_eq!(Token::Question.precedence(), 2);
+        assert_eq!(Token::Colon.precedence(), 1);
+        assert_eq!(Token::StringEqual.as_str(), "eq");
+        assert_eq!(Token::NotIn.as_str(), "ni");
+    }
 
-//     expr_looks_like_int(&p)
-//   }
-
-//   // Note: comparing floating point values for equality is usually a mistake.  In this
-//   // case, we are simply converting simple floating-point values to and from strings, and
-//   // verifying that we got the number we expected, so this is probably OK.
-//   #[allow(clippy::float_cmp)]
-//   fn veq(val1: &Datum, val2: &Datum) -> bool {
-//     if val1.vtype != val2.vtype {
-//       return false;
-//     }
-
-//     match &val1.vtype {
-//       Type::Int => val1.int == val2.int,
-//       Type::Float => val1.flt == val2.flt,
-//       Type::String => val1.str == val2.str,
-//     }
-//   }
-
-//   #[test]
-//   fn test_expr_looks_like_int() {
-//     assert!(call_expr_looks_like_int("1"));
-//     assert!(call_expr_looks_like_int("+1"));
-//     assert!(call_expr_looks_like_int("-1"));
-//     assert!(call_expr_looks_like_int("123"));
-//     assert!(call_expr_looks_like_int("123a"));
-//     assert!(!call_expr_looks_like_int(""));
-//     assert!(!call_expr_looks_like_int("a"));
-//     assert!(!call_expr_looks_like_int("123."));
-//     assert!(!call_expr_looks_like_int("123e"));
-//     assert!(!call_expr_looks_like_int("123E"));
-//     assert!(!call_expr_looks_like_int("."));
-//     assert!(!call_expr_looks_like_int("e"));
-//     assert!(!call_expr_looks_like_int("E"));
-//   }
-
-//   #[test]
-//   fn test_expr_parse_string() {
-//     let result = expr_parse_string("");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::string("")));
-
-//     let result = expr_parse_string("abc");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::string("abc")));
-
-//     let result = expr_parse_string(" 123abc");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::string(" 123abc")));
-
-//     let result = expr_parse_string(" 123.0abc");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::string(" 123.0abc")));
-
-//     let result = expr_parse_string(" 123   ");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::int(123)));
-
-//     let result = expr_parse_string(" 1.0   ");
-//     assert!(result.is_ok());
-//     assert!(veq(&result.unwrap(), &Datum::float(1.0)));
-
-//     let result = expr_parse_string("1234567890123456789012345678901234567890");
-//     assert!(result.is_err());
-
-//     // Should have an example of a float overflow/underflow, but I've not found a literal
-//     // string that gives one.
-//   }
-
-//   #[test]
-//   fn call_expr() {
-//     let mut interp = Interp::new(());
-
-//     let result = expr(&mut interp, &Value::from("1 + 1"));
-//     assert!(result.is_ok());
-//     assert_eq!(result.unwrap().as_int().unwrap(), 2);
-
-//     let result = expr(&mut interp, &Value::from("1.1 + 1.1"));
-//     assert!(result.is_ok());
-//     let flt: MoltFloat = result.unwrap().as_float().unwrap();
-//     assert!(near(flt, 2.2));
-
-//     let result = expr(&mut interp, &Value::from("[set x foo]"));
-//     assert!(result.is_ok());
-//     assert_eq!(result.unwrap().as_str(), "foo");
-//   }
-
-//   fn near(x: MoltFloat, target: MoltFloat) -> bool {
-//     x >= target - std::f64::EPSILON && x <= target + std::f64::EPSILON
-//   }
-// }
+    #[test]
+    fn integer_lookahead_preserves_expression_boundaries() {
+        for value in ["1", "+1", "-1", "123", "123a"] {
+            assert!(expr_looks_like_int(&Tokenizer::new(value)), "{value}");
+        }
+        for value in ["", "a", "123.", "123e", "123E", ".", "e", "E"] {
+            assert!(!expr_looks_like_int(&Tokenizer::new(value)), "{value}");
+        }
+    }
+}

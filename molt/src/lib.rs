@@ -20,10 +20,13 @@
 //! [`types`]: types/index.html
 //! [`test_harness`]: test_harness/index.html
 
-// #![doc(html_root_url = "https://docs.rs/molt/0.3.0")]
-// #![doc(html_logo_url = "https://github.com/wduquette/molt/raw/master/MoltLogo.png")]
+#![forbid(unsafe_code)]
 
 pub use crate::types::*;
+pub use crate::{
+    interp::Interp,
+    test_harness::{test_harness, TestCtx, TestHarnessError},
+};
 mod commands;
 pub mod dict;
 mod eval_ptr;
@@ -40,6 +43,13 @@ pub mod test_harness;
 pub mod types;
 mod util;
 pub mod value;
+
+/// Implementation details used by Molt's exported macros.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::list::list_to_string;
+    pub use molt_macro::{format_command_help, format_subcommand_help};
+}
 
 /// This function is used in command functions to check whether the command's argument
 /// list is of a proper size for the given command.  If it is, `check_args` returns
@@ -95,8 +105,8 @@ pub fn check_args(
     assert!(!argv.is_empty());
 
     if argv.len() < min || (max > 0 && argv.len() > max) {
-        let cmd_tokens = Value::from(&argv[0..namec]);
-        molt_err!("wrong # args: should be \"{} {}\"", cmd_tokens.to_string(), argsig)
+        let cmd_tokens = list::list_to_string(&argv[0..namec]);
+        molt_err!("wrong # args: should be \"{} {}\"", cmd_tokens, argsig)
     } else {
         molt_ok!()
     }

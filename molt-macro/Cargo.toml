@@ -1,15 +1,17 @@
 [package]
-name = "molt-shell"
+name = "molt-macro"
 description.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-keywords.workspace = true
 authors.workspace = true
-readme.workspace = true
 repository.workspace = true
-documentation.workspace = true
+
+[lib]
+proc-macro = true
 
 [dependencies]
-molt-forked.workspace = true
-rustyline = "5.0.0"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["parsing"] }
+unicode-width = "0.1"

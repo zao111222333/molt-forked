@@ -1,6 +1,6 @@
 name: Rust
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   build:
@@ -8,8 +8,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        targets: wasm32-unknown-unknown
+    - name: Formatting
+      run: cargo fmt --all --check
+    - name: Tests
+      run: cargo test --workspace --all-features --all-targets
+    - name: Documentation tests
+      run: cargo test --workspace --doc
+    - name: Documentation
+      run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+    - name: Clippy
+      run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+    - name: WASM libraries
+      run: cargo check --target wasm32-unknown-unknown -p molt-wasm -p molt-forked --features molt-forked/wasm
+    - name: WASM demo
+      run: cargo check --target wasm32-unknown-unknown -p molt-wasm-demo

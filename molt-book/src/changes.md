@@ -1,5 +1,20 @@
 # Annotated Change Log
 
+## New in Molt 0.5.0
+
+* Added the `molt-macro` procedural-macro crate for compile-time command validation and
+  Unicode display-width help layout.
+* Changed `gen_subcommand!` and application entries in `gen_command!` to unpadded
+  `(name, handler, help)` triples. The old four-field syntax is no longer accepted.
+* Added automatic `-help` support to the built-in `array`, `dict`, `info`, and `string`
+  ensembles while retaining enhanced unknown-command usage output.
+* Removed unsafe code from `Value` and variable scopes, and fixed external-value caching.
+* Reworked expression values and built-in math functions around enums and static dispatch.
+* Fixed recursion-depth, procedure-scope, and custom result-code state handling.
+* Reduced allocations in empty values, variable updates, command arguments, list/dictionary
+  formatting, `join`, and case-insensitive comparisons.
+* Unified the workspace and local WASM dependency graph at version `0.5.0`.
+
 ## New in Molt 0.3.2
 
 Nothing yet!

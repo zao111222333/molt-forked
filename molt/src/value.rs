@@ -102,19 +102,19 @@
 //! a simple enum.
 //!
 //! ```
-//! use molt::types::*;
+//! use molt_forked::types::*;
 //! use std::fmt;
 //! use std::str::FromStr;
 //!
 //! #[derive(Debug, PartialEq, Copy, Clone)]
 //! pub enum Flavor {
-//!     SALTY,
-//!     SWEET,
+//!     Salty,
+//!     Sweet,
 //! }
 //!
 //! impl fmt::Display for Flavor {
 //!     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//!         if *self == Flavor::SALTY {
+//!         if *self == Flavor::Salty {
 //!             write!(f, "salty")
 //!         } else {
 //!             write!(f, "sweet")
@@ -129,9 +129,9 @@
 //!         let value = value.to_lowercase();
 //!
 //!         if value == "salty" {
-//!             Ok(Flavor::SALTY)
+//!             Ok(Flavor::Salty)
 //!         } else if value == "sweet" {
-//!             Ok(Flavor::SWEET)
+//!             Ok(Flavor::Sweet)
 //!         } else {
 //!            // The error message doesn't matter to Molt
 //!            Err("Not a flavor string".to_string())
@@ -173,9 +173,9 @@ use crate::{
     types::{Exception, MoltDict, MoltFloat, MoltInt, MoltList, VarName},
 };
 use std::{
-    any::{Any, TypeId},
-    cell::{RefCell, UnsafeCell},
-    fmt::{Debug, Display},
+    any::Any,
+    cell::{OnceCell, RefCell},
+    fmt::{self, Debug, Display},
     hash::{Hash, Hasher},
     rc::Rc,
     str::FromStr,
@@ -202,8 +202,12 @@ impl Hash for Value {
 /// The inner value of a `Value`, to be wrapped in an `Rc<T>` so that `Values` can be shared.
 #[derive(Debug)]
 struct InnerValue {
-    string_rep: UnsafeCell<Option<String>>,
+    string_rep: OnceCell<String>,
     data_rep: RefCell<DataRep>,
+}
+
+thread_local! {
+    static EMPTY_VALUE: Value = Value::inner_from_string(String::new());
 }
 
 impl std::fmt::Debug for Value {
@@ -220,7 +224,7 @@ impl Value {
     /// Creates a value whose `InnerValue` is defined by its string rep.
     fn inner_from_string(str: String) -> Self {
         let inner = InnerValue {
-            string_rep: UnsafeCell::new(Some(str)),
+            string_rep: OnceCell::from(str),
             data_rep: RefCell::new(DataRep::None),
         };
 
@@ -230,7 +234,7 @@ impl Value {
     /// Creates a value whose `InnerValue` is defined by its data rep.
     fn inner_from_data(data: DataRep) -> Self {
         let inner = InnerValue {
-            string_rep: UnsafeCell::new(None),
+            string_rep: OnceCell::new(),
             data_rep: RefCell::new(data),
         };
 
@@ -260,13 +264,17 @@ impl From<String> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let string = String::from("My New String");
     /// let value = Value::from(string);
     /// assert_eq!(value.as_str(), "My New String");
     /// ```
     fn from(str: String) -> Self {
-        Value::inner_from_string(str)
+        if str.is_empty() {
+            Value::empty()
+        } else {
+            Value::inner_from_string(str)
+        }
     }
 }
 
@@ -276,12 +284,16 @@ impl From<&str> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let value = Value::from("My String Slice");
     /// assert_eq!(value.as_str(), "My String Slice");
     /// ```
     fn from(str: &str) -> Self {
-        Value::inner_from_string(str.to_string())
+        if str.is_empty() {
+            Value::empty()
+        } else {
+            Value::inner_from_string(str.to_owned())
+        }
     }
 }
 
@@ -291,12 +303,12 @@ impl From<&String> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let value = Value::from("My String Slice");
     /// assert_eq!(value.as_str(), "My String Slice");
     /// ```
     fn from(str: &String) -> Self {
-        Value::inner_from_string(str.to_string())
+        Value::from(str.as_str())
     }
 }
 
@@ -307,7 +319,7 @@ impl From<bool> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let value = Value::from(true);
     /// assert_eq!(value.as_str(), "1");
     ///
@@ -325,9 +337,9 @@ impl From<MoltDict> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::MoltDict;
-    /// use molt::dict::dict_new;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltDict;
+    /// use molt_forked::dict::dict_new;
     ///
     /// let mut dict: MoltDict = dict_new();
     /// dict.insert(Value::from("abc"), Value::from("123"));
@@ -345,7 +357,7 @@ impl From<MoltInt> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     ///
     /// let value = Value::from(123);
     /// assert_eq!(value.as_str(), "123");
@@ -370,7 +382,7 @@ impl From<MoltFloat> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     ///
     /// let value = Value::from(12.34);
     /// assert_eq!(value.as_str(), "12.34");
@@ -386,7 +398,7 @@ impl From<MoltList> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     ///
     /// let list = vec![Value::from(1234), Value::from("abc")];
     /// let value = Value::from(list);
@@ -403,7 +415,7 @@ impl From<&[Value]> for Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     ///
     /// let values = [Value::from(1234), Value::from("abc")];
     /// let value = Value::from(&values[..]);
@@ -418,10 +430,9 @@ impl Value {
     /// Returns the empty `Value`, a value whose string representation is the empty
     /// string.
     ///
-    /// TODO: This should really be a constant, but there's way to build it as one
-    /// unless I use lazy_static.
+    /// Cloning the thread-local singleton only increments its `Rc`; it does not allocate.
     pub fn empty() -> Value {
-        Value::inner_from_string("".into())
+        EMPTY_VALUE.with(Clone::clone)
     }
 
     /// Returns the value's string representation as a reference-counted
@@ -433,29 +444,15 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let value = Value::from(123);
     /// assert_eq!(value.as_str(), "123");
     /// ```
     pub fn as_str(&self) -> &str {
-        // FIRST, get the string rep, computing it from the data_rep if necessary.
-        // self.inner.string_rep.get_or_init(|| (self.inner.data_rep.borrow()).to_string())
-
-        // NOTE: This method is the only place where the string_rep is queried.
-        let slot = unsafe { &*self.inner.string_rep.get() };
-
-        if let Some(inner) = slot {
-            return inner;
-        }
-
-        // NOTE: This is the only place where the string_rep is set.
-        // Because we returned it if it was Some, it is only ever set once.
-        // Thus, this is safe: as_str() is the only way to retrieve the string_rep,
-        // and it computes the string_rep lazily after which it is immutable.
-        let slot = unsafe { &mut *self.inner.string_rep.get() };
-        *slot = Some((self.inner.data_rep.borrow()).to_string());
-
-        slot.as_ref().expect("string rep")
+        self.inner
+            .string_rep
+            .get_or_init(|| self.inner.data_rep.borrow().to_string())
+            .as_str()
     }
 
     /// Returns the value's string representation if it is already ready.
@@ -464,7 +461,7 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
+    /// use molt_forked::types::Value;
     /// let value = Value::from(123);
     /// assert_eq!(value.try_as_str(), None);
     /// assert_eq!(value.as_str(), "123");
@@ -473,7 +470,7 @@ impl Value {
     /// assert_eq!(value_str.try_as_str(), Some("123"));
     /// ```
     pub fn try_as_str(&self) -> Option<&str> {
-        unsafe { &*self.inner.string_rep.get() }.as_ref().map(|x| x.as_ref())
+        self.inner.string_rep.get().map(String::as_str)
     }
 
     /// Tries to return the `Value` as a `bool`, parsing the
@@ -492,8 +489,8 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<bool,Exception> {
     /// // All of the following can be interpreted as booleans.
     /// let value = Value::from(true);
@@ -562,13 +559,13 @@ impl Value {
     ///
     /// Parsing is case-insensitive, and leading and trailing whitespace are ignored.
     ///
-    /// This method does not evaluate expressions; use `molt::expr` to evaluate boolean
-    /// expressions.
+    /// This method does not evaluate expressions; use [`Interp::expr_bool`](crate::Interp::expr_bool)
+    /// to evaluate boolean expressions.
     ///
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
+    /// # use molt_forked::types::*;
     /// # fn dummy() -> Result<bool,Exception> {
     /// let arg = "yes";
     /// let flag = Value::get_bool(arg)?;
@@ -577,12 +574,21 @@ impl Value {
     /// # }
     /// ```
     pub fn get_bool(arg: &str) -> Result<bool, Exception> {
-        let orig = arg;
-        let value: &str = &arg.trim().to_lowercase();
-        match value {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            _ => molt_err!("expected boolean but got \"{}\"", orig),
+        let value = arg.trim();
+        if value == "1"
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("on")
+        {
+            Ok(true)
+        } else if value == "0"
+            || value.eq_ignore_ascii_case("false")
+            || value.eq_ignore_ascii_case("no")
+            || value.eq_ignore_ascii_case("off")
+        {
+            Ok(false)
+        } else {
+            molt_err!("expected boolean but got \"{}\"", arg)
         }
     }
 
@@ -593,9 +599,9 @@ impl Value {
     ///
     /// ```
     /// use std::rc::Rc;
-    /// use molt::types::Value;
-    /// use molt::types::MoltDict;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltDict;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<(),Exception> {
     ///
     /// let value = Value::from("abc 1234");
@@ -637,9 +643,9 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::MoltDict;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltDict;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<String,Exception> {
     ///
     /// let value = Value::from("abc 1234");
@@ -651,7 +657,7 @@ impl Value {
     /// # }
     /// ```
     pub fn to_dict(&self) -> Result<MoltDict, Exception> {
-        Ok((&*self.as_dict()?).to_owned())
+        Ok((*self.as_dict()?).to_owned())
     }
 
     /// Tries to return the `Value` as a `MoltInt`, parsing the
@@ -666,9 +672,9 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::MoltInt;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltInt;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<MoltInt,Exception> {
     ///
     /// let value = Value::from(123);
@@ -703,7 +709,7 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
+    /// # use molt_forked::types::*;
     /// # fn dummy() -> Result<MoltInt,Exception> {
     /// let arg = "1";
     /// let int = Value::get_int(arg)?;
@@ -722,8 +728,8 @@ impl Value {
             arg = &arg[1..];
         }
 
-        let parse_result = if arg.starts_with("0x") {
-            MoltInt::from_str_radix(&arg[2..], 16)
+        let parse_result = if let Some(hex) = arg.strip_prefix("0x") {
+            MoltInt::from_str_radix(hex, 16)
         } else {
             arg.parse::<MoltInt>()
         };
@@ -744,9 +750,9 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::MoltFloat;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltFloat;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<MoltFloat,Exception> {
     ///
     /// let value = Value::from(12.34);
@@ -781,7 +787,7 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// # use molt::types::*;
+    /// # use molt_forked::types::*;
     /// # fn dummy() -> Result<MoltFloat,Exception> {
     /// let arg = "1e2";
     /// let val = Value::get_float(arg)?;
@@ -789,9 +795,18 @@ impl Value {
     /// # }
     /// ```
     pub fn get_float(arg: &str) -> Result<MoltFloat, Exception> {
-        let arg_trim = arg.trim().to_lowercase();
+        let arg_trim = arg.trim();
+        let parsed = if arg_trim.eq_ignore_ascii_case("inf") {
+            Ok(MoltFloat::INFINITY)
+        } else if arg_trim.eq_ignore_ascii_case("-inf") {
+            Ok(MoltFloat::NEG_INFINITY)
+        } else if arg_trim.eq_ignore_ascii_case("nan") {
+            Ok(MoltFloat::NAN)
+        } else {
+            arg_trim.parse::<MoltFloat>()
+        };
 
-        match arg_trim.parse::<MoltFloat>() {
+        match parsed {
             Ok(flt) => Ok(flt),
             Err(_) => molt_err!("expected floating-point number but got \"{}\"", arg),
         }
@@ -802,9 +817,9 @@ impl Value {
     /// TODO: This needs a lot of work, so that floating point outputs will parse back into
     /// the same floating point numbers.
     fn fmt_float(f: &mut std::fmt::Formatter, flt: MoltFloat) -> std::fmt::Result {
-        if flt == std::f64::INFINITY {
+        if flt == f64::INFINITY {
             write!(f, "Inf")
-        } else if flt == std::f64::NEG_INFINITY {
+        } else if flt == f64::NEG_INFINITY {
             write!(f, "-Inf")
         } else if flt.is_nan() {
             write!(f, "NaN")
@@ -821,9 +836,9 @@ impl Value {
     ///
     /// ```
     /// use std::rc::Rc;
-    /// use molt::types::Value;
-    /// use molt::types::MoltList;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltList;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<String,Exception> {
     ///
     /// let value = Value::from("1234 abc");
@@ -859,9 +874,9 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::Value;
-    /// use molt::types::MoltList;
-    /// use molt::types::Exception;
+    /// use molt_forked::types::Value;
+    /// use molt_forked::types::MoltList;
+    /// use molt_forked::types::Exception;
     /// # fn dummy() -> Result<String,Exception> {
     ///
     /// let value = Value::from("1234 abc");
@@ -875,7 +890,7 @@ impl Value {
     /// # }
     /// ```
     pub fn to_list(&self) -> Result<MoltList, Exception> {
-        Ok((&*self.as_list()?).to_owned())
+        Ok((*self.as_list()?).to_owned())
     }
 
     /// Tries to return the `Value` as an `Rc<Script>`, parsing the
@@ -906,7 +921,7 @@ impl Value {
     /// # Example
     ///
     /// ```
-    /// use molt::types::{Value, VarName};
+    /// use molt_forked::types::{Value, VarName};
     ///
     /// let value = Value::from("my_var");
     /// let var_name = value.as_var_name();
@@ -953,11 +968,11 @@ impl Value {
     /// See [`Value::as_other`](#method.as_other) and
     /// [`Value::as_copy`](#method.as_copy) for examples of how to
     /// retrieve a `MyType` value from a `Value`.
-    pub fn from_other<T: 'static>(value: T) -> Value
+    pub fn from_other<T>(value: T) -> Value
     where
-        T: Display + Debug,
+        T: Display + Debug + 'static,
     {
-        Value::inner_from_data(DataRep::Other(Rc::new(value)))
+        Value::inner_from_data(DataRep::Other(OtherValue::new(value)))
     }
 
     /// Tries to interpret the `Value` as a value of external type `T`, parsing
@@ -996,14 +1011,13 @@ impl Value {
     ///     let b = *color.blue();
     /// }
     /// ```
-    pub fn as_other<T: 'static>(&self) -> Option<Rc<T>>
+    pub fn as_other<T>(&self) -> Option<Rc<T>>
     where
-        T: Display + Debug + FromStr,
+        T: Display + Debug + FromStr + 'static,
     {
         // FIRST, if we have the desired type, return it.
         if let DataRep::Other(other) = &*self.inner.data_rep.borrow() {
-            // other is an &Rc<MoltAny>
-            if let Ok(out) = other.clone().downcast::<T>() {
+            if let Some(out) = other.downcast::<T>() {
                 return Some(out);
             }
         }
@@ -1014,9 +1028,9 @@ impl Value {
 
         if let Ok(tval) = str.parse::<T>() {
             let tval = Rc::new(tval);
-            let out = tval.clone();
-            *self.inner.data_rep.borrow_mut() = DataRep::Other(Rc::new(tval));
-            return Some(out);
+            *self.inner.data_rep.borrow_mut() =
+                DataRep::Other(OtherValue::from_rc(Rc::clone(&tval)));
+            return Some(tval);
         }
 
         // NEXT, we couldn't do it.
@@ -1055,14 +1069,13 @@ impl Value {
     ///     let b = color.blue();
     /// }
     /// ```
-    pub fn as_copy<T: 'static>(&self) -> Option<T>
+    pub fn as_copy<T>(&self) -> Option<T>
     where
-        T: Display + Debug + FromStr + Copy,
+        T: Display + Debug + FromStr + Copy + 'static,
     {
         // FIRST, if we have the desired type, return it.
         if let DataRep::Other(other) = &*self.inner.data_rep.borrow() {
-            // other is an &Rc<MoltAny>
-            if let Ok(out) = other.clone().downcast::<T>() {
+            if let Some(out) = other.downcast::<T>() {
                 return Some(*out);
             }
         }
@@ -1072,10 +1085,8 @@ impl Value {
         let str = self.as_str();
 
         if let Ok(tval) = str.parse::<T>() {
-            let tval = Rc::new(tval);
-            let out = tval.clone();
-            *self.inner.data_rep.borrow_mut() = DataRep::Other(Rc::new(tval));
-            return Some(*out);
+            *self.inner.data_rep.borrow_mut() = DataRep::Other(OtherValue::new(tval));
+            return Some(tval);
         }
 
         // NEXT, we couldn't do it.
@@ -1095,41 +1106,52 @@ impl Value {
 }
 
 //-----------------------------------------------------------------------------
-// The MoltAny Trait: a tool for handling external types.
+// Type-erased external value with safe, typed formatting and downcasting.
 
-/// This trait allows us to except "other" types, and still compute their
-/// string rep on demand.
-trait MoltAny: Any + Display + Debug {
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+#[derive(Clone)]
+struct OtherValue {
+    value: Rc<dyn Any>,
+    display: fn(&dyn Any, &mut fmt::Formatter<'_>) -> fmt::Result,
+    debug: fn(&dyn Any, &mut fmt::Formatter<'_>) -> fmt::Result,
 }
 
-impl dyn MoltAny {
-    /// Is this value a value of the desired type?
-    pub fn is<T: 'static>(&self) -> bool {
-        TypeId::of::<T>() == self.type_id()
+impl OtherValue {
+    fn new<T: Any + Display + Debug>(value: T) -> Self {
+        Self::from_rc(Rc::new(value))
     }
 
-    /// Downcast an `Rc<MoltAny>` to an `Rc<T>`
-    fn downcast<T: 'static>(self: Rc<Self>) -> Result<Rc<T>, Rc<Self>> {
-        if self.is::<T>() {
-            unsafe { Ok(Rc::from_raw(Rc::into_raw(self) as _)) }
-        } else {
-            Err(self)
+    fn from_rc<T: Any + Display + Debug>(value: Rc<T>) -> Self {
+        Self {
+            value,
+            display: |value, formatter| {
+                Display::fmt(
+                    value.downcast_ref::<T>().expect("external value type"),
+                    formatter,
+                )
+            },
+            debug: |value, formatter| {
+                Debug::fmt(
+                    value.downcast_ref::<T>().expect("external value type"),
+                    formatter,
+                )
+            },
         }
     }
+
+    fn downcast<T: Any>(&self) -> Option<Rc<T>> {
+        Rc::clone(&self.value).downcast::<T>().ok()
+    }
 }
 
-impl<T: Any + Display + Debug> MoltAny for T {
-    fn as_any(&self) -> &dyn Any {
-        self
+impl Display for OtherValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (self.display)(self.value.as_ref(), formatter)
     }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
+}
+
+impl Debug for OtherValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (self.debug)(self.value.as_ref(), formatter)
     }
 }
 
@@ -1161,7 +1183,7 @@ enum DataRep {
     VarName(Rc<VarName>),
 
     /// An external data type
-    Other(Rc<dyn MoltAny>),
+    Other(OtherValue),
 
     /// The Value has no data rep at present.
     None,
@@ -1171,10 +1193,10 @@ impl Display for DataRep {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             DataRep::Bool(flag) => write!(f, "{}", if *flag { 1 } else { 0 }),
-            DataRep::Dict(dict) => write!(f, "{}", dict_to_string(&*dict)),
+            DataRep::Dict(dict) => write!(f, "{}", dict_to_string(dict)),
             DataRep::Int(int) => write!(f, "{}", int),
             DataRep::Flt(flt) => Value::fmt_float(f, *flt),
-            DataRep::List(list) => write!(f, "{}", list_to_string(&*list)),
+            DataRep::List(list) => write!(f, "{}", list_to_string(list)),
             DataRep::Script(script) => write!(f, "{:?}", script),
             DataRep::VarName(var_name) => write!(f, "{:?}", var_name),
             DataRep::Other(other) => write!(f, "{}", other),
@@ -1189,6 +1211,7 @@ mod tests {
     use crate::dict::dict_new;
     use std::fmt;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn from_string() {
@@ -1411,7 +1434,7 @@ mod tests {
         assert_eq!(Value::get_float("1"), Ok(1.0));
         assert_eq!(Value::get_float("2.3"), Ok(2.3));
         assert_eq!(Value::get_float(" 4.5 "), Ok(4.5));
-        assert_eq!(Value::get_float("Inf"), Ok(std::f64::INFINITY));
+        assert_eq!(Value::get_float("Inf"), Ok(f64::INFINITY));
 
         assert_eq!(
             Value::get_float("abc"),
@@ -1489,25 +1512,36 @@ mod tests {
     #[test]
     fn from_to_flavor() {
         // Give a Flavor, get an Rc<Flavor> back.
-        let myval = Value::from_other(Flavor::SALTY);
+        let myval = Value::from_other(Flavor::Salty);
         let result = myval.as_other::<Flavor>();
         assert!(result.is_some());
         let out = result.unwrap();
-        assert_eq!(*out, Flavor::SALTY);
+        assert_eq!(*out, Flavor::Salty);
 
         // Give a String, get an Rc<Flavor> back.
         let myval = Value::from("sweet");
         let result = myval.as_other::<Flavor>();
         assert!(result.is_some());
         let out = result.unwrap();
-        assert_eq!(*out, Flavor::SWEET);
+        assert_eq!(*out, Flavor::Sweet);
 
         // Flavor is Copy, so get a Flavor back
-        let myval = Value::from_other(Flavor::SALTY);
+        let myval = Value::from_other(Flavor::Salty);
         let result = myval.as_copy::<Flavor>();
         assert!(result.is_some());
         let out = result.unwrap();
-        assert_eq!(out, Flavor::SALTY);
+        assert_eq!(out, Flavor::Salty);
+    }
+
+    #[test]
+    fn external_type_is_parsed_only_once() {
+        PARSE_COUNT.store(0, Ordering::SeqCst);
+        let value = Value::from("42");
+
+        assert_eq!(value.as_copy::<Counted>(), Some(Counted(42)));
+        assert_eq!(value.as_copy::<Counted>(), Some(Counted(42)));
+        assert_eq!(*value.as_other::<Counted>().unwrap(), Counted(42));
+        assert_eq!(PARSE_COUNT.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1533,8 +1567,28 @@ mod tests {
 
     #[derive(Debug, PartialEq, Copy, Clone)]
     pub enum Flavor {
-        SALTY,
-        SWEET,
+        Salty,
+        Sweet,
+    }
+
+    static PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug, PartialEq, Copy, Clone)]
+    struct Counted(u32);
+
+    impl FromStr for Counted {
+        type Err = std::num::ParseIntError;
+
+        fn from_str(value: &str) -> Result<Self, Self::Err> {
+            PARSE_COUNT.fetch_add(1, Ordering::SeqCst);
+            value.parse().map(Self)
+        }
+    }
+
+    impl fmt::Display for Counted {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.0)
+        }
     }
 
     impl FromStr for Flavor {
@@ -1544,9 +1598,9 @@ mod tests {
             let value = value.to_lowercase();
 
             if value == "salty" {
-                Ok(Flavor::SALTY)
+                Ok(Flavor::Salty)
             } else if value == "sweet" {
-                Ok(Flavor::SWEET)
+                Ok(Flavor::Sweet)
             } else {
                 Err("Not a flavor string".to_string())
             }
@@ -1555,7 +1609,7 @@ mod tests {
 
     impl fmt::Display for Flavor {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            if *self == Flavor::SALTY {
+            if *self == Flavor::Salty {
                 write!(f, "salty")
             } else {
                 write!(f, "sweet")

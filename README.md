@@ -9,6 +9,40 @@ This is a forked version of `molt`, a embeddable TCL interpreter for Rust applic
 + [ ] Full tcl 8.6.14 support
 + [ ] Update molt-app to latest rustyline version
 
+## New in Molt-forked 0.5.0
+
+* Added the `molt-macro` compile-time helper. `gen_subcommand!` and `gen_command!` now
+  validate literal names, reject collisions, and generate Unicode-width-aligned static help.
+* Simplified the command declaration syntax to `(name, handler, help)` triples; the old
+  manually padded four-field syntax is intentionally unsupported.
+* Removed all `unsafe` from the core crate and tightened `Value`, scope, procedure, and
+  expression state so invalid combinations cannot be represented.
+* Reduced allocations in empty results, variable updates, list/dictionary serialization,
+  `join`, and expression dispatch. Fixed recursion/scope leaks and custom `catch` codes.
+* All workspace crates now use version `0.5.0` and local path dependencies.
+* Release microbenchmarks and the reproducible 0.4.5 comparison are recorded in
+  [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); every measured median improved.
+
+```rust,ignore
+gen_subcommand!(
+    AppCtx,
+    1,
+    [
+        ("-alert", cmd_browser_alert, "show an alert"),
+        ("-confirm", cmd_browser_confirm, "show a confirmation"),
+    ],
+);
+
+gen_command!(
+    AppCtx,
+    [(_SOURCE, cmd_source)],
+    [
+        ("about", cmd_about, "display app information"),
+        ("browser", cmd_browser, "call browser APIs"),
+    ],
+);
+```
+
 ## New in Molt-forked 0.4.1
 
 * The subcommands now is static, we can use `gen_subcommand!` macro to init SubCommand.

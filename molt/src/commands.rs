@@ -5,10 +5,11 @@
 use crate::{
     dict::{dict_new, dict_path_insert, dict_path_remove, list_to_dict},
     interp::Interp,
+    list::list_to_string,
     types::*,
     util, *,
 };
-use std::fs;
+use std::{borrow::Cow, fs};
 cfg_if::cfg_if! {
   if #[cfg(feature = "wasm")] {
     use wasm_timer::Instant;
@@ -64,10 +65,11 @@ pub fn cmd_append<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     // start with the empty string.
     let mut new_string: String = interp
         .var(&argv[1])
-        .and_then(|val| Ok(val.to_string()))
+        .map(|val| val.to_string())
         .unwrap_or_else(|_| String::new());
 
     // NEXT, append the remaining values to the string.
+    new_string.reserve(argv[2..].iter().map(|item| item.as_str().len()).sum());
     for item in &argv[2..] {
         new_string.push_str(item.as_str());
     }
@@ -78,37 +80,18 @@ pub fn cmd_append<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 
 /// # array *subcommand* ?*arg*...?
 ///
-/// https://www.tcl.tk/man/tcl8.6/TclCmd/array.htm
+/// <https://www.tcl.tk/man/tcl8.6/TclCmd/array.htm>
 pub fn cmd_array<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    // cfg_if::cfg_if! {
-    //     if #[cfg(feature = "native_subcmd_help")] {
-    //         let f = gen_subcommand!(
-    //             Ctx,
-    //             1,
-    //             [
-    //                 ("anymore", "    ", cmd_todo, "[TODO] array anymore arrayName searchId"),
-    //                 ("donesearch", " ", cmd_todo, "[TODO] array donesearch arrayName searchId"),
-    //                 ("exists", "     ", cmd_array_exists,"array exists arrayName"),
-    //                 ("get", "        ", cmd_array_get,   "array get arrayName ?pattern?"),
-    //                 ("names", "      ", cmd_array_names, "array names arrayName ?mode? ?pattern?"),
-    //                 ("nextelement", "", cmd_todo, "[TODO] array nextelement arrayName searchId"),
-    //                 ("set", "        ", cmd_array_set,   "array set arrayName list"),
-    //                 ("size", "       ", cmd_array_size,  "array size arrayName"),
-    //                 ("startsearch", "", cmd_todo, "[TODO] array startsearch arrayName"),
-    //                 ("statistics", " ", cmd_todo, "[TODO] array statistics arrayName"),
-    //                 ("unset", "      ", cmd_array_unset, "array unset arrayName ?pattern?"),
-    //             ],
-    //         );
-    //     }else{
-    let f = _gen_subcommand_generic!(
+    let f = gen_subcommand!(
+        Ctx,
         1,
         [
-            ("exists", cmd_array_exists),
-            ("get", cmd_array_get),
-            ("names", cmd_array_names),
-            ("set", cmd_array_set),
-            ("size", cmd_array_size),
-            ("unset", cmd_array_unset),
+            ("exists", cmd_array_exists, "array exists arrayName"),
+            ("get", cmd_array_get, "array get arrayName ?pattern?"),
+            ("names", cmd_array_names, "array names arrayName ?mode? ?pattern?"),
+            ("set", cmd_array_set, "array set arrayName list"),
+            ("size", cmd_array_size, "array size arrayName"),
+            ("unset", cmd_array_unset, "array unset arrayName ?pattern?"),
         ],
     );
     f(interp, argv)
@@ -156,12 +139,12 @@ pub fn cmd_array_set<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResul
     let var_name = argv[2].as_var_name();
 
     if var_name.index().is_none() {
-        interp.array_set(var_name.name(), &*argv[3].as_list()?)
+        interp.array_set(var_name.name(), &argv[3].as_list()?)
     } else {
         // This line will create the array if it doesn't exist, and throw an error if the
         // named variable exists but isn't an array.  This is a little wacky, but it's
         // what TCL 8.6 does.
-        interp.array_set(var_name.name(), &*Value::empty().as_list()?)?;
+        interp.array_set(var_name.name(), &Value::empty().as_list()?)?;
 
         // And this line throws an error because the full name the caller specified is an
         // element, not the array itself.
@@ -230,7 +213,7 @@ pub fn cmd_catch<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
             ResultCode::Return => (2, exception.value()),
             ResultCode::Break => (3, exception.value()),
             ResultCode::Continue => (4, exception.value()),
-            ResultCode::Other(_) => unimplemented!(), // TODO: Not in use yet
+            ResultCode::Other(num) => (num, exception.value()),
         },
     };
 
@@ -256,67 +239,33 @@ pub fn cmd_continue<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResul
 
 /// # dict *subcommand* ?*arg*...?
 ///
-/// https://www.tcl.tk/man/tcl8.6/TclCmd/dict.htm
+/// <https://www.tcl.tk/man/tcl8.6/TclCmd/dict.htm>
 pub fn cmd_dict<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    // cfg_if::cfg_if! {
-    //     if #[cfg(feature = "native_subcmd_help")] {
-    //         let f = gen_subcommand!(
-    //             Ctx,
-    //             1,
-    //             [
-    //                 ("append", " ", cmd_todo, "[TODO] dict append dictionaryVariable key ?string ...?"),
-    //                 ("create", " ", cmd_dict_new,"dict create ?key value ...?"),
-    //                 ("exists", " ", cmd_dict_exists,"dict exists dictionaryValue key ?key ...?"),
-    //                 ("filter", " ", cmd_todo, "[TODO] dict filter dictionaryValue filterType arg ?arg ...?"),
-    //                 // dict filter dictionaryValue key ?globPattern ...?
-    //                 // dict filter dictionaryValue script {keyVariable valueVariable} script
-    //                 // dict filter dictionaryValue value ?globPattern ...?
-    //                 ("for", "    ", cmd_todo, "[TODO] dict for {keyVariable valueVariable} dictionaryValue body"),
-    //                 ("get", "    ", cmd_dict_get,"dict get dictionaryValue ?key ...?"),
-    //                 ("incr", "   ", cmd_todo,"[TODO] dict incr dictionaryVariable key ?increment?"),
-    //                 ("info", "   ", cmd_todo,"[TODO] dict info dictionaryValue"),
-    //                 ("keys", "   ", cmd_dict_keys,"dict keys dictionaryValue ?globPattern?"),
-    //                 ("lappend", "", cmd_todo,"[TODO] dict lappend dictionaryVariable key ?value ...?"),
-    //                 ("map", "    ", cmd_todo,"[TODO] dict map {keyVariable valueVariable} dictionaryValue body"),
-    //                 ("merge", "  ", cmd_todo,"[TODO] dict merge ?dictionaryValue ...?"),
-    //                 ("remove", " ", cmd_dict_remove,"dict remove dictionaryValue ?key ...?"),
-    //                 ("replace", "", cmd_todo,"[TODO] dict replace dictionaryValue ?key value ...?"),
-    //                 ("set", "    ", cmd_dict_set,"dict set dictionaryVariable key ?key ...? value"),
-    //                 ("size", "   ", cmd_dict_size,"dict size dictionaryValue"),
-    //                 ("unset", "  ", cmd_dict_unset,"dict unset dictionaryVariable key ?key ...?"),
-    //                 ("update", " ", cmd_todo,"[TODO] dict update dictionaryVariable key varName ?key varName ...? body"),
-    //                 ("values", " ", cmd_dict_values,"dict values dictionaryValue ?globPattern?"),
-    //                 ("with", "   ", cmd_todo,"[TODO] dict with dictionaryVariable ?key ...? body"),
-    //             ],
-    //         );
-    //     }else{
-    let f = _gen_subcommand_generic!(
+    let f = gen_subcommand!(
+        Ctx,
         1,
         [
-            ("create", cmd_dict_new),
-            ("exists", cmd_dict_exists),
-            ("get", cmd_dict_get),
-            ("keys", cmd_dict_keys),
-            ("remove", cmd_dict_remove),
-            ("set", cmd_dict_set),
-            ("size", cmd_dict_size),
-            ("unset", cmd_dict_unset),
-            ("values", cmd_dict_values),
+            ("create", cmd_dict_new, "dict create ?key value ...?"),
+            ("exists", cmd_dict_exists, "dict exists dictionary key ?key ...?"),
+            ("get", cmd_dict_get, "dict get dictionary ?key ...?"),
+            ("keys", cmd_dict_keys, "dict keys dictionary"),
+            ("remove", cmd_dict_remove, "dict remove dictionary ?key ...?"),
+            ("set", cmd_dict_set, "dict set dictVarName key ?key ...? value"),
+            ("size", cmd_dict_size, "dict size dictionary"),
+            ("unset", cmd_dict_unset, "dict unset dictVarName key ?key ...?"),
+            ("values", cmd_dict_values, "dict values dictionary"),
         ],
     );
-
-    //     }
-    // }
     f(interp, argv)
 }
 
 /// # dict create ?key value ...?
 fn cmd_dict_new<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     // FIRST, we need an even number of arguments.
-    if argv.len() % 2 != 0 {
+    if !argv.len().is_multiple_of(2) {
         return molt_err!(
             "wrong # args: should be \"{} {}\"",
-            Value::from(&argv[0..2]).to_string(),
+            list_to_string(&argv[0..2]),
             "?key value?"
         );
     }
@@ -386,7 +335,7 @@ fn cmd_dict_remove<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult
     check_args(2, argv, 3, 0, "dictionary ?key ...?")?;
 
     // FIRST, get and clone the dictionary, so we can modify it.
-    let mut dict = (&*argv[2].as_dict()?).clone();
+    let mut dict = (*argv[2].as_dict()?).clone();
 
     // NEXT, remove the given keys.
     for key in &argv[3..] {
@@ -478,15 +427,20 @@ pub fn cmd_exit<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 /// ## TCL Liens
 ///
 /// See the Molt Book.
-
 pub fn cmd_expr<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 2, 0, "expr")?;
 
     if argv.len() == 2 {
         interp.expr(&argv[1])
     } else {
-        let values = argv[1..].iter().map(|v| v.as_str()).collect::<Vec<_>>();
-        interp.expr(&Value::from(values.join(" ")))
+        let mut expression = String::new();
+        for (index, value) in argv[1..].iter().enumerate() {
+            if index != 0 {
+                expression.push(' ');
+            }
+            expression.push_str(value.as_str());
+        }
+        interp.expr(&Value::from(expression))
     }
 }
 
@@ -555,10 +509,10 @@ pub fn cmd_foreach<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult 
     while i < list.len() {
         for var in var_list {
             if i < list.len() {
-                interp.set_var(&var, list[i].clone())?;
+                interp.set_var(var, list[i].clone())?;
                 i += 1;
             } else {
-                interp.set_var(&var, Value::empty())?;
+                interp.set_var(var, Value::empty())?;
             }
         }
 
@@ -679,19 +633,14 @@ pub fn cmd_if<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     }
 
     if argi < argv.len() {
-        return molt_err!(
-            "wrong # args: extra words after \"else\" clause in \"if\" command"
-        );
+        molt_err!("wrong # args: extra words after \"else\" clause in \"if\" command")
     } else if wants == IfWants::Expr {
-        return molt_err!(
-            "wrong # args: no expression after \"{}\" argument",
-            argv[argi - 1]
-        );
+        molt_err!("wrong # args: no expression after \"{}\" argument", argv[argi - 1])
     } else if wants == IfWants::ThenBody || wants == IfWants::SkipThenClause {
-        return molt_err!(
+        molt_err!(
             "wrong # args: no script following after \"{}\" argument",
             argv[argi - 1]
-        );
+        )
     } else {
         // Looking for ElseBody, but there doesn't need to be one.
         molt_ok!() // temp
@@ -706,31 +655,29 @@ pub fn cmd_incr<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 
     let increment: MoltInt = if argv.len() == 3 { argv[2].as_int()? } else { 1 };
 
-    let new_value = increment
-        + interp
-            .var(&argv[1])
-            .and_then(|val| Ok(val.as_int()?))
-            .unwrap_or_else(|_| 0);
+    let new_value =
+        increment + interp.var(&argv[1]).and_then(|val| val.as_int()).unwrap_or(0);
 
     interp.set_var_return(&argv[1], new_value.into())
 }
 
 /// # info *subcommand* ?*arg*...?
 pub fn cmd_info<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    let f = _gen_subcommand_generic!(
+    let f = gen_subcommand!(
+        Ctx,
         1,
         [
-            ("args", cmd_info_args),
-            ("body", cmd_info_body),
-            ("cmdtype", cmd_info_cmdtype),
-            ("commands", cmd_info_commands),
-            ("complete", cmd_info_complete),
-            ("default", cmd_info_default),
-            ("exists", cmd_info_exists),
-            ("globals", cmd_info_globals),
-            ("locals", cmd_info_locals),
-            ("procs", cmd_info_procs),
-            ("vars", cmd_info_vars),
+            ("args", cmd_info_args, "info args procname"),
+            ("body", cmd_info_body, "info body procname"),
+            ("cmdtype", cmd_info_cmdtype, "info cmdtype command"),
+            ("commands", cmd_info_commands, "info commands ?pattern?"),
+            ("complete", cmd_info_complete, "info complete command"),
+            ("default", cmd_info_default, "info default procname arg varname"),
+            ("exists", cmd_info_exists, "info exists varName"),
+            ("globals", cmd_info_globals, "info globals ?pattern?"),
+            ("locals", cmd_info_locals, "info locals ?pattern?"),
+            ("procs", cmd_info_procs, "info procs ?pattern?"),
+            ("vars", cmd_info_vars, "info vars ?pattern?"),
         ],
     );
     f(interp, argv)
@@ -739,19 +686,19 @@ pub fn cmd_info<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 /// # info args *procname*
 pub fn cmd_info_args<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 3, 3, "procname")?;
-    interp.proc_args(&argv[2].as_str())
+    interp.proc_args(argv[2].as_str())
 }
 
 /// # info body *procname*
 pub fn cmd_info_body<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 3, 3, "procname")?;
-    interp.proc_body(&argv[2].as_str())
+    interp.proc_body(argv[2].as_str())
 }
 
 /// # info cmdtype *command*
 pub fn cmd_info_cmdtype<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 3, 3, "command")?;
-    interp.command_type(&argv[2].as_str())
+    interp.command_type(argv[2].as_str())
 }
 
 /// # info commands ?*pattern*?
@@ -763,7 +710,7 @@ pub fn cmd_info_commands<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> Molt
 pub fn cmd_info_default<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 5, 5, "procname arg varname")?;
 
-    if let Some(val) = interp.proc_default(&argv[2].as_str(), &argv[3].as_str())? {
+    if let Some(val) = interp.proc_default(argv[2].as_str(), argv[3].as_str())? {
         interp.set_var(&argv[4], val)?;
         molt_ok!(1)
     } else {
@@ -820,12 +767,19 @@ pub fn cmd_join<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 
     let list = &argv[1].as_list()?;
 
-    let join_string = if argv.len() == 3 { argv[2].to_string() } else { " ".to_string() };
+    let join_string = if argv.len() == 3 { argv[2].as_str() } else { " " };
+    let item_len: usize = list.iter().map(|value| value.as_str().len()).sum();
+    let mut output = String::with_capacity(
+        item_len + join_string.len().saturating_mul(list.len().saturating_sub(1)),
+    );
+    for (index, value) in list.iter().enumerate() {
+        if index != 0 {
+            output.push_str(join_string);
+        }
+        output.push_str(value.as_str());
+    }
 
-    // TODO: Need to implement a standard join() method for MoltLists.
-    let list: Vec<String> = list.iter().map(|v| v.to_string()).collect();
-
-    molt_ok!(list.join(&join_string))
+    molt_ok!(output)
 }
 
 /// # lappend *varName* ?*value* ...?
@@ -835,12 +789,9 @@ pub fn cmd_join<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 pub fn cmd_lappend<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 2, 0, "varName ?value ...?")?;
 
-    let var_result = interp.var(&argv[1]);
-
-    let mut list: MoltList = if var_result.is_ok() {
-        var_result.expect("got value").to_list()?
-    } else {
-        Vec::new()
+    let mut list = match interp.var(&argv[1]) {
+        Ok(value) => value.to_list()?,
+        Err(_) => Vec::new(),
     };
 
     let mut values = argv[2..].to_owned();
@@ -857,7 +808,7 @@ pub fn cmd_lindex<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult 
     if argv.len() != 3 {
         lindex_into(&argv[1], &argv[2..])
     } else {
-        lindex_into(&argv[1], &*argv[2].as_list()?)
+        lindex_into(&argv[1], &argv[2].as_list()?)
     }
 }
 
@@ -954,20 +905,22 @@ pub fn cmd_proc<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 /// * Does not support `channelId`
 pub fn cmd_puts<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 2, 2, "string")?;
-    cfg_if::cfg_if! {
-      if #[cfg(feature = "std_buff")] {
+    #[cfg(feature = "std_buff")]
+    {
         interp.std_buff.push(Ok(argv[1].clone()));
-      } else {
+    }
+    #[cfg(not(feature = "std_buff"))]
+    {
+        let _ = interp;
         println!("{}", argv[1]);
-      }
     }
     molt_ok!()
 }
 
-// /// # rename *oldName* *newName*
-// ///
-// /// Renames the command called *oldName* to have the *newName*.  If the
-// /// *newName* is "", the command is destroyed.
+/// # rename *oldName* *newName*
+///
+/// Renames the procedure called *oldName* to *newName*. If *newName* is empty, the
+/// procedure is removed.
 pub fn cmd_rename<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 3, 3, "oldName newName")?;
 
@@ -1015,7 +968,7 @@ pub fn cmd_return<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult 
     // after the command name.
     let return_value: Value;
 
-    let opt_args: &[Value] = if argv.len() % 2 == 0 {
+    let opt_args: &[Value] = if argv.len().is_multiple_of(2) {
         // odd number of args following the command name
         return_value = argv[argv.len() - 1].clone();
         &argv[1..argv.len() - 1]
@@ -1102,71 +1055,44 @@ pub fn cmd_source<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 
 /// # string *subcommand* ?*arg*...?
 ///
-/// https://www.tcl.tk/man/tcl8.6/TclCmd/string.htm
+/// <https://www.tcl.tk/man/tcl8.6/TclCmd/string.htm>
 pub fn cmd_string<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    // cfg_if::cfg_if! {
-    //     if #[cfg(feature = "native_subcmd_help")] {
-    //         let f = gen_subcommand!(
-    //             Ctx,
-    //             1,
-    //             [
-    //                 ("cat","       ", cmd_string_cat,"string cat ?string1? ?string2...?"),
-    //                 ("compare","   ", cmd_string_compare,"string compare ?-nocase? ?-length length? string1 string2"),
-    //                 ("equal","     ", cmd_string_equal,"string equal ?-nocase? ?-length length? string1 string2"),
-    //                 ("first","     ", cmd_string_first,"string first needleString haystackString ?startIndex?"),
-    //                 ("index","     ", cmd_todo,"string index string charIndex"),
-    //                 ("is","        ", cmd_todo,"[TODO] string is class ?-strict? ?-failindex varname? string"),
-    //                 ("last","      ", cmd_string_last,"string last needleString haystackString ?lastIndex?"),
-    //                 ("length","    ", cmd_string_length,"string length string"),
-    //                 ("map","       ", cmd_string_map,"string map ?-nocase? mapping string"),
-    //                 ("match","     ", cmd_todo,"[TODO] string match ?-nocase? pattern string"),
-    //                 ("range","     ", cmd_string_range,"string range string first last"),
-    //                 ("repeat","    ", cmd_todo,"[TODO] string repeat string count"),
-    //                 ("replace","   ", cmd_todo,"[TODO] string replace string first last ?newstring?"),
-    //                 ("reverse","   ", cmd_todo,"[TODO] string reverse string"),
-    //                 ("tolower","   ", cmd_string_tolower,"string tolower string ?first? ?last?"),
-    //                 ("totitle","   ", cmd_todo,"[TODO] string totitle string ?first? ?last?"),
-    //                 ("toupper","   ", cmd_string_toupper,"string toupper string ?first? ?last?"),
-    //                 ("trim","      ", cmd_string_trim,"string trim string ?chars?"),
-    //                 ("trimleft","  ", cmd_string_trim,"string trimleft string ?chars?"),
-    //                 ("trimright"," ", cmd_string_trim,"string trimright string ?chars?"),
-    //                 ("bytelength","", cmd_todo,"[TODO] string bytelength string"),
-    //                 ("wordend","   ", cmd_todo,"[TODO] string wordend string charIndex"),
-    //                 ("wordstart"," ", cmd_todo,"[TODO] string wordstart string charIndex"),
-    //             ],
-    //         );
-
-    //     }else{
-    let f = _gen_subcommand_generic!(
+    let f = gen_subcommand!(
+        Ctx,
         1,
         [
-            ("cat", cmd_string_cat),
-            ("compare", cmd_string_compare),
-            ("equal", cmd_string_equal),
-            ("first", cmd_string_first),
-            // ("index", cmd_todo),
-            ("last", cmd_string_last),
-            ("length", cmd_string_length),
-            ("map", cmd_string_map),
-            ("range", cmd_string_range),
-            // ("replace", cmd_todo),
-            // ("repeat", cmd_todo),
-            // ("reverse", cmd_todo),
-            ("tolower", cmd_string_tolower),
-            ("toupper", cmd_string_toupper),
-            ("trim", cmd_string_trim),
-            ("trimleft", cmd_string_trim),
-            ("trimright", cmd_string_trim),
+            ("cat", cmd_string_cat, "string cat ?string ...?"),
+            (
+                "compare",
+                cmd_string_compare,
+                "string compare ?-nocase? ?-length length? string1 string2"
+            ),
+            (
+                "equal",
+                cmd_string_equal,
+                "string equal ?-nocase? ?-length length? string1 string2"
+            ),
+            (
+                "first",
+                cmd_string_first,
+                "string first needleString haystackString ?startIndex?"
+            ),
+            (
+                "last",
+                cmd_string_last,
+                "string last needleString haystackString ?lastIndex?"
+            ),
+            ("length", cmd_string_length, "string length string"),
+            ("map", cmd_string_map, "string map ?-nocase? mapping string"),
+            ("range", cmd_string_range, "string range string first last"),
+            ("tolower", cmd_string_tolower, "string tolower string"),
+            ("toupper", cmd_string_toupper, "string toupper string"),
+            ("trim", cmd_string_trim, "string trim string"),
+            ("trimleft", cmd_string_trim, "string trimleft string"),
+            ("trimright", cmd_string_trim, "string trimright string"),
         ],
     );
-    //     }
-    // }
     f(interp, argv)
-}
-
-/// TODO cmds
-pub fn cmd_todo<Ctx>(_interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_err!("TODO")
 }
 
 /// string cat ?*arg* ...?
@@ -1211,11 +1137,10 @@ pub fn cmd_string_compare<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> Mol
         let val1 = &argv[arglen - 2];
         let val2 = &argv[arglen - 1];
 
-        // TODO: *Not* the best way to do this; consider using the unicase crate.
-        let val1 = Value::from(val1.as_str().to_lowercase());
-        let val2 = Value::from(val2.as_str().to_lowercase());
+        let val1 = val1.as_str().to_lowercase();
+        let val2 = val2.as_str().to_lowercase();
 
-        molt_ok!(util::compare_len(val1.as_str(), val2.as_str(), length)?)
+        molt_ok!(util::compare_len(&val1, &val2, length)?)
     } else {
         molt_ok!(util::compare_len(
             argv[arglen - 2].as_str(),
@@ -1256,11 +1181,10 @@ pub fn cmd_string_equal<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltR
         let val1 = &argv[arglen - 2];
         let val2 = &argv[arglen - 1];
 
-        // TODO: *Not* the best way to do this; consider using the unicase crate.
-        let val1 = Value::from(val1.as_str().to_lowercase());
-        let val2 = Value::from(val2.as_str().to_lowercase());
+        let val1 = val1.as_str().to_lowercase();
+        let val2 = val2.as_str().to_lowercase();
 
-        let flag = util::compare_len(val1.as_str(), val2.as_str(), length)? == 0;
+        let flag = util::compare_len(&val1, &val2, length)? == 0;
         molt_ok!(flag)
     } else {
         let flag = util::compare_len(
@@ -1377,15 +1301,18 @@ pub fn cmd_string_map<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRes
     let char_map = argv[argv.len() - 2].as_dict()?;
     let s = argv[argv.len() - 1].as_str();
 
-    let filtered_keys = char_map
+    let filtered_keys: Vec<(Cow<'_, str>, usize, &Value)> = char_map
         .iter()
         .map(|(k, v)| {
-            let new_k =
-                if nocase { Value::from(k.as_str().to_lowercase()) } else { k.clone() };
+            let key = if nocase {
+                Cow::Owned(k.as_str().to_lowercase())
+            } else {
+                Cow::Borrowed(k.as_str())
+            };
 
-            let count = new_k.as_str().chars().count();
+            let count = key.chars().count();
 
-            (new_k, count, v.clone())
+            (key, count, v)
         })
         .filter(|(_, count, _)| *count > 0)
         .collect::<Vec<_>>();
@@ -1409,7 +1336,7 @@ pub fn cmd_string_map<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRes
                 None => &s[i..],
             };
 
-            if haystack.starts_with(&from.as_str()) {
+            if haystack.starts_with(from.as_ref()) {
                 matched = true;
 
                 result.push_str(to.as_str());
@@ -1503,10 +1430,7 @@ pub fn cmd_time<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     let start = Instant::now();
 
     for _i in 0..count {
-        let result = interp.eval_value(command);
-        if result.is_err() {
-            return result;
-        }
+        interp.eval_value(command)?;
     }
 
     let span = start.elapsed();

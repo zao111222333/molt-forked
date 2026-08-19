@@ -1,4 +1,4 @@
-use gloo::{console::debug, timers::callback::Timeout};
+use gloo::timers::callback::Timeout;
 // re-export molt_forked
 use molt::prelude::*;
 pub use molt_forked as molt;
@@ -108,7 +108,7 @@ impl Component for Terminal {
                         }
                     }
                     if let Some(element) = self.hist_div_ref.cast::<web_sys::Element>() {
-                        Timeout::new(5 as u32, move || {
+                        Timeout::new(5_u32, move || {
                             element.set_scroll_top(element.scroll_height());
                         })
                         .forget();
@@ -131,7 +131,9 @@ impl Component for Terminal {
                         true
                     }
                     None => {
-                        let i = ctx.props().hist.len() - 1;
+                        let Some(i) = ctx.props().hist.len().checked_sub(1) else {
+                            return false;
+                        };
                         self.current_hist_idx = Some(i);
                         if let Some((_, hist_cmd, _)) = ctx.props().hist.get(i) {
                             self.input_tmp = mem::take(&mut self.input);
@@ -245,5 +247,27 @@ impl Component for Terminal {
             ></textarea>
           </div>
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::molt;
+    use molt::prelude::*;
+
+    fn ping(_interp: &mut Interp<()>, _argv: &[Value]) -> MoltResult {
+        molt_ok!("pong")
+    }
+
+    #[test]
+    fn command_macro_works_through_wasm_reexport() {
+        let command = molt::gen_subcommand!((), 1, [("ping", ping, "reply with pong")]);
+        let mut interp = Interp::default();
+        assert_eq!(
+            command(&mut interp, &["bridge".into(), "ping".into()])
+                .unwrap()
+                .as_str(),
+            "pong"
+        );
     }
 }

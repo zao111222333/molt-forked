@@ -6,11 +6,10 @@
 //! * Warning: when removing items from a dictionary, use `dict_remove`, defined here, as it
 //!   preserves the order.  Using `IndexMap::remove` does not.
 
-use crate::list::list_to_string;
+use crate::list::values_to_string;
 use crate::molt_err;
 use crate::molt_ok;
 use crate::types::MoltDict;
-use crate::types::MoltList;
 use crate::types::MoltResult;
 use crate::value::Value;
 use indexmap::IndexMap;
@@ -33,17 +32,17 @@ pub(crate) fn dict_path_insert(
     let dict = dict_val.as_dict()?;
 
     if keys.len() == 1 {
-        molt_ok!(dict_insert(&*dict, &keys[0], &value))
+        molt_ok!(dict_insert(&dict, &keys[0], value))
     } else if let Some(dval) = dict.get(&keys[0]) {
         molt_ok!(dict_insert(
-            &*dict,
+            &dict,
             &keys[0],
             &dict_path_insert(dval, &keys[1..], value)?
         ))
     } else {
         let dval = Value::from(dict_new());
         molt_ok!(dict_insert(
-            &*dict,
+            &dict,
             &keys[0],
             &dict_path_insert(&dval, &keys[1..], value)?
         ))
@@ -66,9 +65,9 @@ pub(crate) fn dict_path_remove(dict_val: &Value, keys: &[Value]) -> MoltResult {
     let dict = dict_val.as_dict()?;
 
     if keys.len() == 1 {
-        molt_ok!(dict_remove(&*dict, &keys[0]))
+        molt_ok!(dict_remove(&dict, &keys[0]))
     } else if let Some(dval) = dict.get(&keys[0]) {
-        molt_ok!(dict_insert(&*dict, &keys[0], &dict_path_remove(dval, &keys[1..])?))
+        molt_ok!(dict_insert(&dict, &keys[0], &dict_path_remove(dval, &keys[1..])?))
     } else {
         molt_err!("key \"{}\" not known in dictionary", keys[0])
     }
@@ -83,20 +82,13 @@ pub(crate) fn dict_remove(dict: &MoltDict, key: &Value) -> MoltDict {
 
 /// Converts a dictionary into a string.
 pub(crate) fn dict_to_string(dict: &MoltDict) -> String {
-    let mut vec: MoltList = Vec::new();
-
-    for (k, v) in dict {
-        vec.push(k.clone());
-        vec.push(v.clone());
-    }
-
-    list_to_string(&vec)
+    values_to_string(dict.iter().flat_map(|(key, value)| [key, value]))
 }
 
 /// Converts a vector of values into a dictionary.  The list must have
 /// an even number of elements.
 pub(crate) fn list_to_dict(list: &[Value]) -> MoltDict {
-    assert!(list.len() % 2 == 0);
+    assert!(list.len().is_multiple_of(2));
 
     let mut dict = dict_new();
 

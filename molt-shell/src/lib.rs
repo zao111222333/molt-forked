@@ -3,8 +3,8 @@
 //! This crate provides the code for adding the Molt REPL and related tools to a binary
 //! crate.
 //!
-//! In each case, begin by creating a `molt::Interp` and adding any application-specific
-//! extensions.  Then:
+//! In each case, begin by creating a [`molt_forked::Interp`] with the desired static command
+//! set. Then:
 //!
 //! * To invoke the REPL, use [`molt_shell::repl`](./fn.repl.html).
 //! * To execute a script, use [`molt_shell::script`](./fn.script.html).

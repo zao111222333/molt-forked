@@ -22,7 +22,6 @@ pub fn is_varname_char(ch: char) -> bool {
 /// ## Notes
 ///
 /// * The resulting string has the form of an integer, but might be out of the valid range.
-
 pub fn read_int(ptr: &mut Tokenizer) -> Option<String> {
     let mut p = ptr.clone();
     let mut result = String::new();
@@ -110,7 +109,7 @@ pub fn read_float(ptr: &mut Tokenizer) -> Option<String> {
     }
 
     // NEXT, get any integer digits
-    while p.has(|ch| ch.is_digit(10)) {
+    while p.has(|ch| ch.is_ascii_digit()) {
         missing_mantissa = false;
         result.push(p.next().unwrap());
     }
@@ -119,7 +118,7 @@ pub fn read_float(ptr: &mut Tokenizer) -> Option<String> {
     if p.is('.') {
         result.push(p.next().unwrap());
 
-        while p.has(|ch| ch.is_digit(10)) {
+        while p.has(|ch| ch.is_ascii_digit()) {
             missing_mantissa = false;
             result.push(p.next().unwrap());
         }
@@ -134,7 +133,7 @@ pub fn read_float(ptr: &mut Tokenizer) -> Option<String> {
             result.push(p.next().unwrap());
         }
 
-        while p.has(|ch| ch.is_digit(10)) {
+        while p.has(|ch| ch.is_ascii_digit()) {
             missing_exponent = false;
             result.push(p.next().unwrap());
         }
@@ -174,13 +173,8 @@ pub(crate) fn compare_len(
     }
 }
 
-// From carlomilanesi, rust forums
-// https://users.rust-lang.org/t/how-to-get-a-substring-of-a-string/1351/11
-use std::ops::{Bound, RangeBounds};
-
 pub(crate) trait StringUtils {
     fn substring(&self, start: usize, len: usize) -> &str;
-    fn slice(&self, range: impl RangeBounds<usize>) -> &str;
 }
 
 impl StringUtils for str {
@@ -213,19 +207,6 @@ impl StringUtils for str {
             }
         }
         &self[byte_start..byte_end]
-    }
-
-    fn slice(&self, range: impl RangeBounds<usize>) -> &str {
-        let start = match range.start_bound() {
-            Bound::Included(bound) | Bound::Excluded(bound) => *bound,
-            Bound::Unbounded => 0,
-        };
-        let len = match range.end_bound() {
-            Bound::Included(bound) => *bound + 1,
-            Bound::Excluded(bound) => *bound,
-            Bound::Unbounded => self.len(),
-        } - start;
-        self.substring(start, len)
     }
 }
 
