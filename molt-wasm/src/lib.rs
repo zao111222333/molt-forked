@@ -193,7 +193,7 @@ impl Component for Terminal {
             input_before_history: String::new(),
             current_history: None,
             move_cursor_to_end: false,
-            scroll_history_to_end: false,
+            scroll_history_to_end: true,
         }
     }
 
@@ -214,13 +214,19 @@ impl Component for Terminal {
                 self.current_history = None;
                 self.input_before_history.clear();
                 ctx.props().on_submit.emit(source);
-                self.request_history_at_end();
                 true
             }
             TerminalMsg::HistoryPrevious => self.previous_history(&ctx.props().entries),
             TerminalMsg::HistoryNext => self.next_history(&ctx.props().entries),
             TerminalMsg::None => false,
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
+        if ctx.props().entries.len() > old_props.entries.len() {
+            self.request_history_at_end();
+        }
+        true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {

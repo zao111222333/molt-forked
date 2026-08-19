@@ -861,7 +861,7 @@ where
                             // convenient form.  For now, just convert the final words to a string.
                             exception.add_error_info(&format!(
                                 "  \"{}\"",
-                                &list_to_string(&words)
+                                list_to_string(&words)
                             ));
                         }
                     }
