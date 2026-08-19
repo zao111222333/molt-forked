@@ -82,24 +82,49 @@ test expr-2.12 {arithmetic} {
     expr {2.2 % 0.0}
 } -error {can't use floating-point value as operand of "%"}
 
-test expr-2.13 {sum overflow} {
-    # Trouble to double std::i64::MAX
-    expr {9223372036854775807 + 9223372036854775807}
-} -error {integer overflow}
+if {$molt_full} {
+    test expr-2.13 {sum promotes to bignum} {
+        expr {9223372036854775807 + 9223372036854775807}
+    } -ok {18446744073709551614}
 
-test expr-2.14 {difference overflow} {
-    # Trouble to double std::i64::MAX
-    expr {-9223372036854775807 - 9223372036854775807}
-} -error {integer overflow}
+    test expr-2.14 {difference promotes to bignum} {
+        expr {-9223372036854775807 - 9223372036854775807}
+    } -ok {-18446744073709551614}
 
-test expr-2.15 {product overflow} {
-    # Trouble to double std::i64::MAX
-    expr {2 * 9223372036854775807}
-} -error {integer overflow}
+    test expr-2.15 {product promotes to bignum} {
+        expr {2 * 9223372036854775807}
+    } -ok {18446744073709551614}
+} else {
+    test expr-2.13 {sum overflow in the slim runtime} {
+        expr {9223372036854775807 + 9223372036854775807}
+    } -error {integer overflow}
+
+    test expr-2.14 {difference overflow in the slim runtime} {
+        expr {-9223372036854775807 - 9223372036854775807}
+    } -error {integer overflow}
+
+    test expr-2.15 {product overflow in the slim runtime} {
+        expr {2 * 9223372036854775807}
+    } -error {integer overflow}
+}
 
 test expr-2.16 {negative divisors} {
     expr {1/-2}
-} -ok {0}
+} -ok {-1}
+
+test expr-2.16a {Tcl floor division and divisor-signed remainder} {
+    lexpr {-1/2} {-1/-2} {1%-2} {-1%2} {-1%-2}
+} -ok {-1 0 -1 1 -1}
+
+test expr-2.16b {right-associative exponentiation} {
+    lexpr {2**3} {2**3**2} {-2**2} {2**-2} {2.0**-2}
+} -ok {8 512 4 0 0.25}
+
+if {$molt_full} {
+    test expr-2.16c {exponentiation promotes to bignum} {
+        expr {2**100}
+    } -ok {1267650600228229401496703205376}
+}
 
 test expr-2.17 {div/rem consistency} {
     # Per KBK, where a and b are integers and b != 0, / and % must
@@ -134,13 +159,13 @@ test expr-2.18 {quotient overflow} {
 
     # This expression, however, does not trigger an overflow.
     expr {1 / (-9223372036854775807 - 1)}
-} -ok {0} ;# Arguably, should be '-error "integer overflow"'
+} -ok {-1}
 
 # Integer overflow on remainder needs to be tested, but it isn't clear how.
 test expr-2.19 {remainder overflow} {
     # This expression, however, does not trigger an overflow.
     expr {1 % (-9223372036854775807 - 1)}
-} -ok {1} ;# Arguably, should be '-error "integer overflow"'
+} -ok {-9223372036854775807}
 
 # expr-3.*: Logical Operators
 proc aflag {flag} {
@@ -301,3 +326,33 @@ rename aflag ""
 rename bflag ""
 rename a ""
 rename b ""
+
+# expr-7.*: Tcl 8.6 mathematical functions
+
+test expr-7.1 {integer and conversion math functions} {
+    lexpr {abs(-4)} {ceil(1.2)} {entier(-1.2)} {floor(1.8)} {int(-1.8)} {round(1.5)} {wide(2.8)}
+} -ok {4 2 -2 1 -1 2 2}
+
+test expr-7.2 {multi-argument math functions} {
+    lexpr {atan2(0, 1)} {fmod(5, 2)} {hypot(3, 4)} {max(1, 2.5, 2)} {min(1, 2.5, -1)} {pow(2, 3)}
+} -ok {0 1 5 2.5 -1 8}
+
+test expr-7.3 {transcendental functions are statically dispatched} {
+    expr {
+        acos(1) == 0.0 && asin(0) == 0.0 && atan(0) == 0.0 &&
+        cos(0) == 1.0 && cosh(0) == 1.0 && exp(0) == 1.0 &&
+        log(1) == 0.0 && log10(1) == 0.0 && sin(0) == 0.0 &&
+        sinh(0) == 0.0 && sqrt(4) == 2.0 && tan(0) == 0.0 && tanh(0) == 0.0
+    }
+} -ok {1}
+
+test expr-7.4 {srand resets the portable Park-Miller sequence} {
+    set first [expr {srand(2)}]
+    set second [expr {rand()}]
+    set again [expr {srand(2)}]
+    expr {$first == $again && $first > 0.0 && $first < 1.0 && $second > 0.0 && $second < 1.0}
+} -ok {1}
+
+test expr-7.5 {domain failures are Tcl errors} {
+    expr {sqrt(-1)}
+} -error {domain error: argument not in valid range}

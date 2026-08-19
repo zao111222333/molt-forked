@@ -23,7 +23,7 @@
 //!
 //! [`Interp::default`] creates an interpreter with unit context and the standard command set.
 //! Applications with their own context or commands declare a static dispatcher with
-//! [`gen_command!`](crate::gen_command) and pass it to [`Interp::new`].
+//! [`gen_command!`](crate::gen_command) and pass it to [`InterpBuilder::new`].
 //!
 //! ```
 //! use molt_forked::Interp;
@@ -141,7 +141,7 @@
 //!     [],
 //!     [("square", cmd_square, "square an integer")],
 //! );
-//! let mut interp = Interp::new((), command, false, "square-example");
+//! let mut interp = InterpBuilder::new((), command).name("square-example").build();
 //!
 //! // NEXT, try using the new command.
 //! let val = interp.eval("square 5")?;
@@ -211,7 +211,7 @@
 //! for example, returns the assigned or retrieved value; it is defined like this:
 //!
 //! ```
-//! use molt_forked::Interp;
+//! use molt_forked::{Interp, InterpBuilder};
 //! use molt_forked::check_args;
 //! use molt_forked::molt_ok;
 //! use molt_forked::types::*;
@@ -258,7 +258,7 @@
 //! extension-specific data.
 //!
 //! All of these patterns can use the interpreter's generic application context, which is
-//! available to every command as `interp.context`.
+//! available to every command through `interp.context()` and `interp.context_mut()`.
 //!
 //! # Commands and Application Context
 //!
@@ -271,7 +271,7 @@
 //! number of failures, etc.  This can be implemented as follows:
 //!
 //! ```
-//! use molt_forked::Interp;
+//! use molt_forked::{Interp, InterpBuilder};
 //! use molt_forked::check_args;
 //! use molt_forked::molt_ok;
 //! use molt_forked::types::*;
@@ -298,11 +298,13 @@
 //!     [],
 //!     [("test", cmd_test, "record a passing test")],
 //! );
-//! let mut interp = Interp::new(Stats::new(), command, false, "stats-example");
+//! let mut interp = InterpBuilder::new(Stats::new(), command)
+//!     .name("stats-example")
+//!     .build();
 //!
 //! // Try using the new command.  It should increment the `num_passed` statistic.
 //! interp.eval("test")?;
-//! assert_eq!(interp.context.num_passed, 1);
+//! assert_eq!(interp.context().num_passed, 1);
 //! # molt_ok!()
 //! # }
 //!
@@ -310,7 +312,7 @@
 //! // increments the `num_passed` statistic in its context.
 //! fn cmd_test(interp: &mut Interp<Stats>, _argv: &[Value]) -> MoltResult {
 //!     // Pretend it passed
-//!     interp.context.num_passed += 1;
+//!     interp.context_mut().num_passed += 1;
 //!
 //!     molt_ok!()
 //! }
@@ -337,18 +339,16 @@
 //! * An instance is represented by an identifier stored in the application's typed context.
 //! * A static ensemble command receives that identifier as an argument and dispatches to the
 //!   appropriate subcommand.
-//! * Each subcommand accesses the instance through `interp.context`.
+//! * Each subcommand accesses the instance through `interp.context_mut()`.
 //!
 //! This keeps the dispatcher static while allowing applications to create and destroy object
 //! data dynamically in their own zero-cost Rust data structures.
 //!
 //! # Checking Scripts for Completeness
 //!
-//! The [`Interp::complete`](struct.Interp.html#method.complete) method checks whether a Molt
-//! script is complete: e.g., that it contains no unterminated quoted or braced strings,
-//! that would prevent it from being evaluated as Molt code.  This is useful when
-//! implementing a Read-Eval-Print-Loop, as it allows the REPL to easily determine whether it
-//! should evaluate the input immediately or ask for an additional line of input.
+//! [`crate::syntax::script_status`] classifies source as complete, incomplete, or invalid.
+//! REPLs use this shared parser API to decide whether to request another line without coupling
+//! syntax analysis to mutable interpreter state.
 //!
 //! [The Molt Book]: https://wduquette.github.io/molt/
 //! [`MoltResult`]: ../types/type.MoltResult.html
@@ -360,7 +360,6 @@ use crate::expr;
 use crate::list::list_to_string;
 use crate::molt_err;
 use crate::molt_ok;
-use crate::parser;
 use crate::parser::Script;
 use crate::parser::Word;
 use crate::scope::ScopeStack;
@@ -368,13 +367,6 @@ use crate::types::*;
 use crate::value::Value;
 use std::collections::HashMap;
 use std::rc::Rc;
-cfg_if::cfg_if! {
-  if #[cfg(feature = "wasm")] {
-    use wasm_timer::Instant;
-  }else{
-    use std::time::Instant;
-  }
-}
 
 // Constants
 const OPT_CODE: &str = "-code";
@@ -385,28 +377,91 @@ const ZERO: &str = "0";
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum CommandType {
+pub enum CommandKind {
     Native,
     Embedded,
     Proc,
 }
 #[doc(hidden)]
-pub struct Command<Ctx: 'static> {
+pub struct CommandSet<Ctx: 'static> {
     fn_execute: fn(&str, &mut Interp<Ctx>, &[Value]) -> MoltResult,
-    fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandType>,
+    fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandKind>,
     native_names: &'static [&'static str],
     embedded_names: &'static [&'static str],
 }
-impl<Ctx> Command<Ctx> {
+impl<Ctx> CommandSet<Ctx> {
     #[inline]
     #[doc(hidden)]
     pub fn new(
         fn_execute: fn(&str, &mut Interp<Ctx>, &[Value]) -> MoltResult,
-        fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandType>,
+        fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandKind>,
         native_names: &'static [&'static str],
         embedded_names: &'static [&'static str],
     ) -> Self {
         Self { fn_execute, fn_type, native_names, embedded_names }
+    }
+}
+
+/// Standard-library profile selected when constructing an interpreter.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub enum StandardLibrary {
+    /// The small embeddable command set with no optional compatibility dependencies.
+    #[default]
+    Slim,
+    /// The platform-independent Tcl 8.6 compatibility command set.
+    Full,
+}
+
+/// Builder for an interpreter with a statically generated application command set.
+pub struct InterpBuilder<Ctx: 'static> {
+    context: Ctx,
+    command_set: CommandSet<Ctx>,
+    use_env: bool,
+    name: &'static str,
+    standard_library: StandardLibrary,
+}
+
+impl<Ctx: 'static> InterpBuilder<Ctx> {
+    /// Starts an interpreter configuration.
+    #[must_use]
+    pub fn new(context: Ctx, command_set: CommandSet<Ctx>) -> Self {
+        Self {
+            context,
+            command_set,
+            use_env: false,
+            name: "molt",
+            standard_library: StandardLibrary::Slim,
+        }
+    }
+
+    /// Sets the name used by enhanced help and command-type reporting.
+    #[must_use]
+    pub const fn name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// Enables or disables importing the process environment as `env()`.
+    #[must_use]
+    pub const fn environment(mut self, enabled: bool) -> Self {
+        self.use_env = enabled;
+        self
+    }
+
+    /// Selects the standard-library profile.
+    #[must_use]
+    pub const fn standard_library(mut self, profile: StandardLibrary) -> Self {
+        self.standard_library = profile;
+        self
+    }
+
+    /// Builds the interpreter.
+    #[must_use]
+    pub fn build(self) -> Interp<Ctx> {
+        if self.standard_library == StandardLibrary::Full && !cfg!(feature = "full") {
+            panic!("StandardLibrary::Full requires the molt-forked/full feature");
+        }
+        Interp::from_builder(self)
     }
 }
 /// The Molt Interpreter.
@@ -441,15 +496,15 @@ pub struct Interp<Ctx>
 where
     Ctx: 'static,
 {
-    pub name: &'static str,
+    name: &'static str,
     // Command Table
-    command: Command<Ctx>,
+    command: CommandSet<Ctx>,
     procs: HashMap<String, Rc<Procedure>>,
     // Variable Table
     scopes: ScopeStack,
 
     /// Embedded context
-    pub context: Ctx,
+    context: Ctx,
     #[cfg(feature = "std_buff")]
     pub std_buff: Vec<Result<Value, Exception>>,
     // Defines the recursion limit for Interp::eval().
@@ -458,23 +513,27 @@ where
     // Current number of eval levels.
     num_levels: usize,
 
-    // Profile Map
-    profile_map: HashMap<String, ProfileRecord>,
-
     // Whether to continue execution in case of error.
     continue_on_error: bool,
+
+    // Park-Miller state used by Tcl's rand()/srand() expression functions.
+    random_state: u64,
+
+    standard_library: StandardLibrary,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ProfileRecord {
-    count: u128,
-    nanos: u128,
-}
-
-impl ProfileRecord {
-    fn new() -> Self {
-        Self { count: 0, nanos: 0 }
+/// Splits Tcl's command-argument variable-name form without allocating. A name is an array
+/// element only when it contains an opening parenthesis and ends in a closing parenthesis;
+/// the first opening parenthesis starts the index, matching `parse_varname_literal`.
+#[inline]
+fn var_name_parts(value: &Value) -> (&str, Option<&str>) {
+    let literal = value.as_str();
+    if literal.ends_with(')') {
+        if let Some(open) = literal.find('(') {
+            return (&literal[..open], Some(&literal[open + 1..literal.len() - 1]));
+        }
     }
+    (literal, None)
 }
 
 impl Default for Interp<()> {
@@ -490,16 +549,19 @@ impl Default for Interp<()> {
         use crate::prelude::*;
         let command = gen_command!(
             (),
-            [
-                (_SOURCE, cmd_source),
-                (_EXIT, cmd_exit),
-                (_PARSE, cmd_parse),
-                (_PDUMP, cmd_pdump),
-                (_PCLEAR, cmd_pclear)
-            ],
+            [(_SOURCE, cmd_source), (_EXIT, cmd_exit), (_PARSE, cmd_parse)],
             []
         );
-        Interp::new((), command, true, "default-app")
+        let profile = if cfg!(feature = "full") {
+            StandardLibrary::Full
+        } else {
+            StandardLibrary::Slim
+        };
+        InterpBuilder::new((), command)
+            .environment(true)
+            .name("default-app")
+            .standard_library(profile)
+            .build()
     }
 }
 
@@ -536,34 +598,68 @@ where
     /// ```
     ///
     #[inline]
-    pub fn new(
-        context: Ctx,
-        command: Command<Ctx>,
-        use_env: bool,
-        name: &'static str,
-    ) -> Self {
+    fn from_builder(builder: InterpBuilder<Ctx>) -> Self {
         let mut interp = Self {
-            name,
-            command,
+            name: builder.name,
+            command: builder.command_set,
             recursion_limit: 1000,
             procs: HashMap::new(),
-            context,
+            context: builder.context,
             #[cfg(feature = "std_buff")]
             std_buff: Vec::new(),
             scopes: ScopeStack::new(),
             num_levels: 0,
-            profile_map: HashMap::new(),
             continue_on_error: false,
+            random_state: 1,
+            standard_library: builder.standard_library,
         };
 
         interp.set_scalar("errorInfo", Value::empty()).unwrap();
-        if use_env {
+        if builder.use_env {
             // Populate the environment variable.
             // TODO: Really should be a "linked" variable, where sets to it are tracked and
             // written back to the environment.
             interp.populate_env();
         }
         interp
+    }
+
+    /// Returns the immutable application context.
+    #[inline]
+    pub const fn context(&self) -> &Ctx {
+        &self.context
+    }
+
+    /// Returns the mutable application context.
+    #[inline]
+    pub fn context_mut(&mut self) -> &mut Ctx {
+        &mut self.context
+    }
+
+    /// Returns the application name used by enhanced help.
+    #[inline]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the selected standard-library profile.
+    #[inline]
+    pub const fn standard_library(&self) -> StandardLibrary {
+        self.standard_library
+    }
+
+    #[inline]
+    pub(crate) fn random_unit(&mut self) -> MoltFloat {
+        const MODULUS: u64 = 2_147_483_647;
+        self.random_state = (self.random_state * 16_807) % MODULUS;
+        self.random_state as MoltFloat / MODULUS as MoltFloat
+    }
+
+    #[inline]
+    pub(crate) fn seed_random(&mut self, seed: MoltInt) -> MoltFloat {
+        const MODULUS: i128 = 2_147_483_647;
+        self.random_state = (i128::from(seed).rem_euclid(MODULUS)) as u64;
+        self.random_unit()
     }
 
     /// Populates the TCL `env()` array with the process's environment variables.
@@ -892,26 +988,6 @@ where
         Value::from(opts)
     }
 
-    /// Determines whether or not the script is syntactically complete,
-    /// e.g., has no unmatched quotes, brackets, or braces.
-    ///
-    /// REPLs use this to determine whether or not to ask for another line of
-    /// input.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use molt_forked::types::*;
-    /// # use molt_forked::interp::Interp;
-    /// let mut interp = Interp::default();
-    /// assert!(interp.complete("set a [expr {1+1}]"));
-    /// assert!(!interp.complete("set a [expr {1+1"));
-    /// ```
-    #[inline]
-    pub fn complete(&mut self, script: &str) -> bool {
-        parser::parse(script).is_ok()
-    }
-
     /// Evaluates a [Molt expression](https://wduquette.github.io/molt/ref/expr.html) and
     /// returns its value.  The expression is passed as a `Value` which is interpreted as a
     /// `String`.
@@ -1049,20 +1125,33 @@ where
     /// ```
     #[inline]
     pub fn var(&self, var_name: &Value) -> MoltResult {
-        let var_name = &*var_name.as_var_name();
-        match var_name.index() {
-            Some(index) => self.element(var_name.name(), index),
-            None => self.scalar(var_name.name()),
+        let (name, index) = var_name_parts(var_name);
+        match index {
+            Some(index) => self.element(name, index),
+            None => self.scalar(name),
+        }
+    }
+
+    /// Retrieves a variable in one lookup, returning `None` only when it is absent.
+    #[inline]
+    pub(crate) fn optional_var(
+        &self,
+        var_name: &Value,
+    ) -> Result<Option<Value>, Exception> {
+        let (name, index) = var_name_parts(var_name);
+        match index {
+            Some(index) => self.scopes.get_elem_optional(name, index),
+            None => self.scopes.get_optional(name),
         }
     }
 
     /// Returns 1 if the named variable is defined and exists, and 0 otherwise.
     #[inline]
     pub fn var_exists(&self, var_name: &Value) -> bool {
-        let var_name = &*var_name.as_var_name();
-        match var_name.index() {
-            Some(index) => self.scopes.elem_exists(var_name.name(), index),
-            None => self.scopes.exists(var_name.name()),
+        let (name, index) = var_name_parts(var_name);
+        match index {
+            Some(index) => self.scopes.elem_exists(name, index),
+            None => self.scopes.exists(name),
         }
     }
 
@@ -1096,10 +1185,10 @@ where
     /// ```
     #[inline]
     pub fn set_var(&mut self, var_name: &Value, value: Value) -> Result<(), Exception> {
-        let var_name = &*var_name.as_var_name();
-        match var_name.index() {
-            Some(index) => self.set_element(var_name.name(), index, value),
-            None => self.set_scalar(var_name.name(), value),
+        let (name, index) = var_name_parts(var_name);
+        match index {
+            Some(index) => self.set_element(name, index, value),
+            None => self.set_scalar(name, value),
         }
     }
 
@@ -1134,10 +1223,10 @@ where
     /// ```
     #[inline]
     pub fn set_var_return(&mut self, var_name: &Value, value: Value) -> MoltResult {
-        let var_name = &*var_name.as_var_name();
-        match var_name.index() {
-            Some(index) => self.set_element_return(var_name.name(), index, value),
-            None => self.set_scalar_return(var_name.name(), value),
+        let (name, index) = var_name_parts(var_name);
+        match index {
+            Some(index) => self.set_element_return(name, index, value),
+            None => self.set_scalar_return(name, value),
         }
     }
 
@@ -1360,12 +1449,11 @@ where
     /// ```
     #[inline]
     pub fn unset_var(&mut self, name: &Value) {
-        let var_name = name.as_var_name();
-
-        if let Some(index) = var_name.index() {
-            self.unset_element(var_name.name(), index);
+        let (name, index) = var_name_parts(name);
+        if let Some(index) = index {
+            self.unset_element(name, index);
         } else {
-            self.unset(var_name.name());
+            self.unset(name);
         }
     }
 
@@ -1461,7 +1549,13 @@ where
     #[inline]
     pub fn upvar(&mut self, level: usize, name: &str) {
         assert!(level <= self.scopes.current(), "Invalid scope level");
-        self.scopes.upvar(level, name);
+        self.scopes.upvar(level, name, name);
+    }
+
+    /// Links `local_name` in the current scope to `other_name` at an outer level.
+    pub fn upvar_as(&mut self, level: usize, other_name: &str, local_name: &str) {
+        assert!(level <= self.scopes.current(), "Invalid scope level");
+        self.scopes.upvar(level, other_name, local_name);
     }
 
     /// Pushes a variable scope (i.e., a stack level) onto the scope stack.
@@ -1492,6 +1586,17 @@ where
     #[inline]
     pub fn scope_level(&self) -> usize {
         self.scopes.current()
+    }
+
+    /// Evaluates a script with an existing scope temporarily active.
+    pub fn eval_at_scope(&mut self, level: usize, script: &Value) -> MoltResult {
+        if level > self.scopes.current() {
+            return molt_err!("bad level \"{}\"", level);
+        }
+        self.scopes.activate(level);
+        let result = self.eval_value(script);
+        self.scopes.deactivate();
+        result
     }
 
     ///-----------------------------------------------------------------------------------
@@ -1644,6 +1749,17 @@ where
         );
     }
 
+    /// Executes an anonymous procedure body for the `apply` command.
+    #[cfg(feature = "full")]
+    pub(crate) fn execute_anonymous(
+        &mut self,
+        parms: &[Value],
+        body: &Value,
+        argv: &[Value],
+    ) -> MoltResult {
+        Procedure { parms: parms.to_owned(), body: body.clone() }.execute(self, argv)
+    }
+
     /// Determines whether or not the interpreter contains a procedure with the given
     /// name.
     #[doc(hidden)]
@@ -1706,14 +1822,20 @@ where
     #[inline]
     pub fn command_names(&self) -> MoltList {
         let mut vec: MoltList =
-            self.command.native_names.iter().map(|&s| Value::from(s)).collect();
+            crate::commands::builtin_command_names(self.standard_library)
+                .chain(self.command.native_names.iter().copied())
+                .map(Value::from)
+                .collect();
         vec.extend(self.command.embedded_names.iter().map(|&s| Value::from(s)));
         vec.extend(self.procs.keys().map(Value::from));
         vec
     }
     #[inline]
     pub fn native_command_names(&self) -> String {
-        self.command.native_names.join(", ")
+        crate::commands::builtin_command_names(self.standard_library)
+            .chain(self.command.native_names.iter().copied())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
     #[inline]
     pub fn proc_command_names(&self) -> String {
@@ -1727,9 +1849,9 @@ where
     #[inline]
     pub fn command_type(&self, cmd_name: &str) -> MoltResult {
         match (self.command.fn_type)(cmd_name, self) {
-            Some(CommandType::Native) => molt_ok!("native"),
-            Some(CommandType::Proc) => molt_ok!("proc"),
-            Some(CommandType::Embedded) => molt_ok!(self.name),
+            Some(CommandKind::Native) => molt_ok!("native"),
+            Some(CommandKind::Proc) => molt_ok!("proc"),
+            Some(CommandKind::Embedded) => molt_ok!(self.name),
             None => molt_err!("\"{}\" isn't a command", cmd_name),
         }
     }
@@ -1850,35 +1972,6 @@ where
     #[inline]
     pub fn set_recursion_limit(&mut self, limit: usize) {
         self.recursion_limit = limit;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    // Profiling
-
-    /// Unstable; use at own risk.
-    pub fn profile_save(&mut self, name: &str, start: Instant) {
-        let dur = Instant::now().duration_since(start).as_nanos();
-        let rec = self.profile_map.entry(name.into()).or_insert_with(ProfileRecord::new);
-
-        rec.count += 1;
-        rec.nanos += dur;
-    }
-
-    /// Unstable; use at own risk.
-    pub fn profile_clear(&mut self) {
-        self.profile_map.clear();
-    }
-
-    /// Unstable; use at own risk.
-    pub fn profile_dump(&self) {
-        if self.profile_map.is_empty() {
-            println!("no profile data");
-        } else {
-            for (name, rec) in &self.profile_map {
-                let avg = rec.nanos / rec.count;
-                println!("{} nanos {}, count={}", avg, name, rec.count);
-            }
-        }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2110,18 +2203,6 @@ mod tests {
     }
 
     #[test]
-    fn test_complete() {
-        let mut interp = Interp::default();
-
-        assert!(interp.complete("abc"));
-        assert!(interp.complete("a {bc} [def] \"ghi\" xyz"));
-
-        assert!(!interp.complete("a {bc"));
-        assert!(!interp.complete("a [bc"));
-        assert!(!interp.complete("a \"bc"));
-    }
-
-    #[test]
     fn test_expr() {
         let mut interp = Interp::default();
         assert_eq!(interp.expr(&Value::from("1 + 2")), Ok(Value::from(3)));
@@ -2260,22 +2341,36 @@ mod tests {
     #[test]
     fn static_dispatcher_accepts_multiple_commands() {
         use crate::prelude::*;
-        let _interp = Interp::new(
+        let _interp = InterpBuilder::new(
             (),
             gen_command!(
                 (),
-                [
-                    (_SOURCE, cmd_source),
-                    (_EXIT, cmd_exit),
-                    (_PARSE, cmd_parse),
-                    (_PDUMP, cmd_pdump),
-                    (_PCLEAR, cmd_pclear),
-                ],
+                [(_SOURCE, cmd_source), (_EXIT, cmd_exit), (_PARSE, cmd_parse),],
                 [("dummy", dummy_cmd, ""), ("dummy2", dummy_cmd, ""),],
             ),
-            true,
-            "",
-        );
+        )
+        .environment(true)
+        .build();
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn library_profile_filters_full_commands_at_runtime() {
+        let slim_command = crate::gen_command!((), [], []);
+        let mut slim = InterpBuilder::new((), slim_command)
+            .standard_library(StandardLibrary::Slim)
+            .build();
+        assert!(!slim.command_names().iter().any(|name| name.as_str() == "apply"));
+        assert!(slim.eval("apply {{x} {return $x}} value").is_err());
+        assert!(slim.command_type("apply").is_err());
+
+        let full_command = crate::gen_command!((), [], []);
+        let mut full = InterpBuilder::new((), full_command)
+            .standard_library(StandardLibrary::Full)
+            .build();
+        assert!(full.command_names().iter().any(|name| name.as_str() == "apply"));
+        assert_eq!(full.eval("apply {{x} {return $x}} value").unwrap().as_str(), "value");
+        assert_eq!(full.command_type("apply").unwrap().as_str(), "native");
     }
 
     fn dummy_cmd(_: &mut Interp<()>, _: &[Value]) -> MoltResult {

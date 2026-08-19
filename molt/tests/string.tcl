@@ -357,3 +357,62 @@ test string-15.10 {string range: Unicode 1} {
 test string-15.11 {string range: Unicode 2} {
     string range カタカナ 2 3
 } -ok カナ
+
+# Tcl 8.6 string surface
+test string-16.1 {string bytelength uses UTF-8 bytes} {
+    list [string bytelength abc] [string bytelength аб]
+} -ok {3 4}
+
+test string-16.2 {string index supports end arithmetic} {
+    list [string index abc 0] [string index abc end-1] [string index abc 99]
+} -ok {a b {}}
+
+test string-16.3 {string match glob syntax and Unicode nocase} {
+    list \
+        [string match {a*b?d} axxxbyd] \
+        [string match {[a-c]at} bat] \
+        [string match {a\*b} {a*b}] \
+        [string match -nocase {К*} космос]
+} -ok {1 1 1 1}
+
+test string-16.4 {string repeat, replace, and reverse} {
+    list \
+        [string repeat ab 3] \
+        [string repeat ab -1] \
+        [string replace abcdef 2 4 XX] \
+        [string reverse абв]
+} -ok {ababab {} abXXf вба}
+
+test string-16.5 {case conversion ranges} {
+    list [string tolower ABCDEF 1 3] [string toupper abcdef 2 end-1]
+} -ok {AbcdEF abCDEf}
+
+test string-16.6 {trim character set} {
+    list [string trim xxabcxy xy] [string trimleft xyxyabc xy] [string trimright abcxyxy xy]
+} -ok {abc abc abc}
+
+test string-17.1 {string is character classes} {
+    list \
+        [string is alpha абв] \
+        [string is digit ١٢] \
+        [string is wordchar _аб1] \
+        [string is lower abc] \
+        [string is lower abc1]
+} -ok {1 1 1 1 0}
+
+test string-17.2 {string is whole-value classes} {
+    list \
+        [string is integer 0x10] \
+        [string is double Inf] \
+        [string is boolean yes] \
+        [string is true on] \
+        [string is false no] \
+        [string is list {a {b c}}]
+} -ok {1 1 1 1 1 1}
+
+test string-17.3 {string is strict empty and fail index} {
+    set valid [string is alnum -failindex validIndex abc]
+    set invalid [string is alnum -strict -failindex invalidIndex ab-c]
+    list $valid $validIndex $invalid $invalidIndex \
+        [string is alpha {}] [string is alpha -strict {}]
+} -ok {1 3 0 2 1 0}

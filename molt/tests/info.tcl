@@ -4,7 +4,6 @@ test info-1.1 {info errors} {
     info
 } -error {wrong # args: should be "info subcommand ?arg ...?"}
 
-# TODO: Really need glob matching.
 test info-1.2 {info errors} {
     info nonesuch
 } -error {unknown subcommand in "info nonesuch", usage:
@@ -254,3 +253,26 @@ test info-11.2 {info globals command: some defined; in proc} -setup {
     global a b
     unset a b
 } -ok {0 0 1 1 1}
+
+test info-12.1 {info commands filters with a Tcl glob pattern} {
+    info commands str*
+} -ok string
+
+test info-12.2 {info procs filters with a Tcl glob pattern} -setup {
+    proc pattern_one {} {}
+    proc pattern_two {} {}
+    proc unrelated {} {}
+} -body {
+    set found [info procs pattern_*]
+    expr {[llength $found] == 2 && "pattern_one" in $found && "pattern_two" in $found}
+} -cleanup {
+    rename pattern_one ""
+    rename pattern_two ""
+    rename unrelated ""
+} -ok 1
+
+test info-12.3 {info vars filters without cloning variable values} {
+    set pattern_scalar value
+    set unrelated value
+    info vars pattern_*
+} -ok pattern_scalar

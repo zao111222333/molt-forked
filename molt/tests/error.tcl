@@ -2,7 +2,7 @@
 
 test error-1.1 {error error} {
     error
-} -error {wrong # args: should be "error message"}
+} -error {wrong # args: should be "error message ?errorInfo? ?errorCode?"}
 
 test error-2.1 {error returns error} {
     error "simulated error"
@@ -29,3 +29,8 @@ test error-3.1 {error sets return options} {
     set a [catch { error "Message" } result opts]
     list $a $result [dict get $opts -code] [dict get $opts -level] [dict get $opts -errorcode]
 } -ok {1 Message 1 0 NONE}
+
+test error-3.2 {error accepts explicit info and code} {
+    catch {error Message {custom stack} {APP CODE}} result opts
+    list $result [dict get $opts -errorcode] [string first {custom stack} [dict get $opts -errorinfo]]
+} -ok {Message {APP CODE} 0}

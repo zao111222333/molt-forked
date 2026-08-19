@@ -11,7 +11,7 @@ repository.workspace = true
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1"
-quote = "1"
-syn = { version = "2", features = ["parsing"] }
-unicode-width = "0.1"
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+unicode-width.workspace = true

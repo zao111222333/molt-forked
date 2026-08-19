@@ -11,12 +11,15 @@ repository.workspace = true
 documentation.workspace = true
 
 [dependencies]
-cfg-if = "1.0.0"
-indexmap = "2.2"
+indexmap.workspace = true
 molt-macro.workspace = true
-wasm-timer = { version = "0.2.5", optional = true}
+molt-syntax.workspace = true
+num-bigint = { workspace = true, optional = true }
+num-traits = { workspace = true, optional = true }
+web-time = { workspace = true, optional = true }
 
 [features]
 default = []
-wasm = ["std_buff", "dep:wasm-timer"]
+full = ["dep:num-bigint", "dep:num-traits"]
+wasm = ["std_buff", "dep:web-time"]
 std_buff = []

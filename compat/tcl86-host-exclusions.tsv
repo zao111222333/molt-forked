@@ -1,0 +1,15 @@
+scope	reason
+tests/chan*.test	Requires Tcl channels and event-loop integration
+tests/event*.test	Requires the Tcl notifier and event loop
+tests/file*.test	Requires host filesystem semantics
+tests/fs*.test	Requires host filesystem semantics
+tests/http*.test	Requires sockets, channels, and network access
+tests/io*.test	Requires native channels and platform I/O
+tests/load*.test	Requires dynamic-library loading and the Tcl C ABI
+tests/main.test	Exercises the native tclsh executable and process environment
+tests/pid.test	Requires process services
+tests/socket*.test	Requires host networking and the event loop
+tests/unix*.test	Exercises Unix-specific host services
+tests/win*.test	Exercises Windows-specific host services
+tests/tcloo.test	Portable but pending TclOO implementation; not a host exclusion and blocks full
+tests/coroutine.test	Portable but pending coroutine VM support; not a host exclusion and blocks full

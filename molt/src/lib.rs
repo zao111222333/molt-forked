@@ -24,7 +24,7 @@
 
 pub use crate::types::*;
 pub use crate::{
-    interp::Interp,
+    interp::{CommandSet, Interp, InterpBuilder, StandardLibrary},
     test_harness::{test_harness, TestCtx, TestHarnessError},
 };
 mod commands;
@@ -39,6 +39,28 @@ mod tokenizer;
 mod macros;
 mod parser;
 mod scope;
+pub mod syntax {
+    //! Shared Tcl 8.6 syntax analysis used by the interpreter and editor frontends.
+
+    pub use molt_syntax::{
+        analyze_script as analyze_script_with_profile,
+        script_status as script_status_with_profile, DiagnosticKind, IncompleteKind,
+        ParseStatus, SyntaxAnalysis, SyntaxDiagnostic, SyntaxKind, SyntaxProfile,
+        SyntaxToken, TextRange, TCL_86_PROFILE,
+    };
+
+    /// Analyzes a script using Molt's Tcl 8.6 built-in command context.
+    #[must_use]
+    pub fn analyze_script(source: &str) -> SyntaxAnalysis {
+        molt_syntax::analyze_script(source, &TCL_86_PROFILE)
+    }
+
+    /// Returns script completeness without allocating highlighting tokens.
+    #[must_use]
+    pub fn script_status(source: &str) -> ParseStatus {
+        molt_syntax::script_status(source, &TCL_86_PROFILE)
+    }
+}
 pub mod test_harness;
 pub mod types;
 mod util;
@@ -47,6 +69,7 @@ pub mod value;
 /// Implementation details used by Molt's exported macros.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::commands::{execute_builtin, is_builtin};
     pub use crate::list::list_to_string;
     pub use molt_macro::{format_command_help, format_subcommand_help};
 }

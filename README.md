@@ -4,10 +4,33 @@
 
 This is a forked version of `molt`, a embeddable TCL interpreter for Rust applications. The original repository is no longer actively maintained, and this version aims to continue its development, fix bugs, and add new features. WASM runtime support. See [demo](https://zao111222333.github.io/molt-forked/demo/).
 
-## TODO
+![Molt WASM terminal with shared Tcl syntax highlighting](screenshot.png)
 
-+ [ ] Full tcl 8.6.14 support
-+ [ ] Update molt-app to latest rustyline version
+## Tcl 8.6.18 roadmap
+
+Molt 0.6 targets the platform-independent Tcl 8.6.18 language behind the `full` feature while
+keeping the default embedding runtime small. The checked-in compatibility matrix distinguishes
+implemented behavior, portable work that still blocks the compatibility claim, and intentionally
+excluded host services: [Tcl 8.6.18 compatibility](docs/TCL_8_6_18_COMPATIBILITY.md).
+Rust embedders upgrading from 0.5 should also read the [0.6 migration guide](docs/MIGRATING_TO_0_6.md).
+
+## New in Molt-forked 0.6.0
+
+* Added the `molt-syntax` crate, re-exported by the interpreter and used by `info complete`, the
+  Rustyline shell and the WASM editor. It provides lossless UTF-8 byte-range tokens and distinct
+  complete/incomplete/invalid status; status-only parsing is monomorphized without collecting
+  tokens or diagnostics. Converging the execution parser on this engine remains a release gate.
+* Upgraded the shell to official Rustyline 18.0.1. Highlighting and validation share one cached
+  analysis, multiline input only waits for incomplete syntax, and `NO_COLOR` is respected.
+* Added the WASM textarea/pre overlay with synchronized syntax highlighting, diagnostics,
+  scrolling, history rendering, IME-aware submission and accessible native text editing.
+* Added slim/full construction through `InterpBuilder`; `full` enables arbitrary-precision integer
+  values and expressions while the slim build keeps its dependency footprint small.
+* Expanded portable Tcl behavior including list index arithmetic, multi-list `foreach`, `lmap`,
+  `apply`, `eval`, `subst`, `switch`, `try`, `upvar`, `uplevel`, Tcl glob matching and additional
+  list/string/dict/array operations.
+* Frozen the official Tcl 8.6.18 test sources and license under `vendor/tcl8.6.18`, with an explicit
+  host-exclusion list and a differential runner for an installed `tclsh8.6.18`.
 
 ## New in Molt-forked 0.5.0
 

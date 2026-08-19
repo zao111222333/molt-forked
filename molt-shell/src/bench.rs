@@ -45,12 +45,10 @@ use std::{env, fs, path::PathBuf};
 ///         ("ok", cmd_ok, "return an empty value"),
 ///     ],
 /// );
-/// let mut interp = Interp::new(
-///     ((), BenchCtx::new()),
-///     command,
-///     true,
-///     "my-benchmarks",
-/// );
+/// let mut interp = InterpBuilder::new(((), BenchCtx::new()), command)
+///     .environment(true)
+///     .name("my-benchmarks")
+///     .build();
 ///
 /// // NEXT, evaluate the file, if any.
 /// if args.len() > 1 {
@@ -119,7 +117,7 @@ pub fn benchmark<Ctx>(interp: &mut Interp<(Ctx, BenchCtx)>, args: &[String]) {
     }
 
     // NEXT, output the test results:
-    let ctx = &mut interp.context.1;
+    let ctx = &mut interp.context_mut().1;
 
     if output_csv {
         write_csv(ctx);
@@ -228,7 +226,7 @@ pub fn measure_cmd<Ctx: 'static>(
     let nanos = argv[3].as_int()?;
 
     // NEXT, get the test context
-    let ctx = &mut interp.context.1;
+    let ctx = &mut interp.context_mut().1;
 
     if ctx.baseline.is_none() {
         ctx.baseline = Some(nanos);

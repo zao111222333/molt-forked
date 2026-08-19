@@ -52,7 +52,7 @@ fn generated_command_supports_help_unknown_and_embedded_dispatch() {
         [],
         [("about", cmd_about, "display app information")],
     );
-    let mut interp = Interp::new((), command, false, "macro-test");
+    let mut interp = InterpBuilder::new((), command).name("macro-test").build();
 
     assert_eq!(interp.eval("about").unwrap().as_str(), "about");
     assert_eq!(

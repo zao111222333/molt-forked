@@ -29,9 +29,20 @@ fn is_list_white(ch: char) -> bool {
     }
 }
 
+fn skip_list_white(ctx: &mut Tokenizer) {
+    loop {
+        ctx.skip_while(|ch| is_list_white(*ch));
+        if ctx.is_folded_newline() {
+            ctx.backslash_subst();
+        } else {
+            break;
+        }
+    }
+}
+
 fn parse_list(ctx: &mut Tokenizer) -> Result<MoltList, Exception> {
     // FIRST, skip any list whitespace.
-    ctx.skip_while(|ch| is_list_white(*ch));
+    skip_list_white(ctx);
 
     // Read words until we get to the end of the input or hit an error
     let mut items = Vec::new();
@@ -41,7 +52,7 @@ fn parse_list(ctx: &mut Tokenizer) -> Result<MoltList, Exception> {
         items.push(parse_item(ctx)?);
 
         // NEXT, skip whitespace to the end or the next item.
-        ctx.skip_while(|ch| is_list_white(*ch));
+        skip_list_white(ctx);
     }
 
     // NEXT, return the items.
@@ -71,14 +82,19 @@ fn parse_braced_item(ctx: &mut Tokenizer) -> MoltResult {
     let mut count = 1;
 
     // NEXT, mark the start of the token, and skip characters until we find the end.
-    let mark = ctx.mark();
+    let mut item = String::new();
+    let mut mark = ctx.mark();
     while let Some(c) = ctx.peek() {
         if c == '\\' {
-            // Backslash handling. Retain backslashes as is.
-            // Note: this means that escaped '{' and '}' characters
-            // don't affect the count.
-            ctx.skip();
-            ctx.skip();
+            if ctx.is_folded_newline() {
+                item.push_str(ctx.token(mark));
+                item.push(ctx.backslash_subst());
+                mark = ctx.mark();
+            } else {
+                // Ordinary backslashes remain literal and quote the following brace.
+                ctx.skip();
+                ctx.skip();
+            }
         } else if c == '{' {
             count += 1;
             ctx.skip();
@@ -91,10 +107,14 @@ fn parse_braced_item(ctx: &mut Tokenizer) -> MoltResult {
                 // We've found and consumed the closing brace.  We should either
                 // see more more whitespace, or we should be at the end of the list
                 // Otherwise, there are incorrect characters following the close-brace.
-                let result = Ok(Value::from(ctx.token(mark)));
+                item.push_str(ctx.token(mark));
+                let result = Ok(Value::from(item));
                 ctx.skip(); // Skip the closing brace
 
-                if ctx.at_end() || ctx.has(|ch| is_list_white(*ch)) {
+                if ctx.at_end()
+                    || ctx.has(|ch| is_list_white(*ch))
+                    || ctx.is_folded_newline()
+                {
                     return result;
                 } else {
                     return molt_err!("extra characters after close-brace");
@@ -154,6 +174,10 @@ fn parse_bare_item(ctx: &mut Tokenizer) -> MoltResult {
         }
 
         if ctx.is('\\') {
+            if ctx.is_folded_newline() {
+                ctx.backslash_subst();
+                break;
+            }
             item.push(ctx.backslash_subst());
             start = ctx.mark();
         }
@@ -363,6 +387,18 @@ mod tests {
         assert_eq!(pbare("a\\x77- def"), "aw-| def".to_string());
         assert_eq!(pbare("a\\x77"), "aw|".to_string());
         assert_eq!(pbare("a\\x77 "), "aw| ".to_string());
+        assert_eq!(
+            get_list("one\\\n  two").unwrap(),
+            vec![Value::from("one"), Value::from("two")]
+        );
+        assert_eq!(
+            get_list("\\\n  one {two\\\n  three}").unwrap(),
+            vec![Value::from("one"), Value::from("two three")]
+        );
+        assert_eq!(
+            get_list("one\\\r\n  two {three\\\r\n  four}").unwrap(),
+            vec![Value::from("one"), Value::from("two"), Value::from("three four")]
+        );
     }
 
     fn pbare(input: &str) -> String {

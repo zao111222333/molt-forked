@@ -11,8 +11,12 @@ repository.workspace = true
 documentation.workspace = true
 
 [dependencies]
-molt-forked.workspace = true
-molt-shell.workspace = true
+molt-forked = { workspace = true, default-features = false }
+molt-shell = { workspace = true, default-features = false }
+
+[features]
+default = ["full"]
+full = ["molt-forked/full", "molt-shell/full"]
 
 [[bin]]
 name = "moltsh"

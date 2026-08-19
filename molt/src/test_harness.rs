@@ -51,7 +51,10 @@ use std::{env, fs, path::PathBuf};
 ///     [],
 ///     [("test", test_cmd, "run a test case")],
 /// );
-/// let mut interp = Interp::new(((), TestCtx::new()), command, true, "my-tests");
+/// let mut interp = InterpBuilder::new(((), TestCtx::new()), command)
+///     .environment(true)
+///     .name("my-tests")
+///     .build();
 ///
 /// // NEXT, evaluate the file, if any.
 /// if args.len() > 1 {
@@ -99,7 +102,7 @@ pub fn test_harness<Ctx>(
     }
 
     // NEXT, output the test results:
-    let ctx = &mut interp.context.1;
+    let ctx = &mut interp.context_mut().1;
     println!(
         "\n{} tests, {} passed, {} failed, {} errors",
         ctx.num_tests, ctx.num_passed, ctx.num_failed, ctx.num_errors
@@ -340,7 +343,7 @@ fn run_test<Ctx>(interp: &mut Interp<(Ctx, TestCtx)>, info: &TestInfo) {
     interp.pop_scope();
 
     // NEXT, get the context and save the results.
-    let ctx = &mut interp.context.1;
+    let ctx = &mut interp.context_mut().1;
     ctx.num_tests += 1;
 
     match &result {
@@ -373,5 +376,5 @@ fn run_test<Ctx>(interp: &mut Interp<(Ctx, TestCtx)>, info: &TestInfo) {
 
 // Increment the failure counter.
 fn incr_errors<Ctx>(interp: &mut Interp<(Ctx, TestCtx)>) {
-    interp.context.1.num_errors += 1;
+    interp.context_mut().1.num_errors += 1;
 }

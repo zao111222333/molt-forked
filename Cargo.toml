@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 authors = ["Will Duquette <will@wjduquette.com>", "Zizheng Guo <gzz_2000@126.com>", "Junzhuo Zhou <zhou@junzhuo.site>"]
@@ -14,17 +14,34 @@ resolver = "2"
 members = [
     "molt",
     "molt-macro",
+    "molt-syntax",
     "molt-shell",
     "molt-wasm",
     "molt-wasm/demo",
     "molt-app",
 ]
 [workspace.dependencies]
-molt-forked = { version = "0.5.0", path = "molt" }
-molt-macro = { version = "0.5.0", path = "molt-macro" }
-molt-shell = { version = "0.5.0", path = "molt-shell" }
-molt-wasm = { version = "0.5.0", path = "molt-wasm" }
-molt-wasm-demo = { version = "0.5.0", path = "molt-wasm/demo" }
+chrono = "0.4.45"
+indexmap = "2.14.0"
+log = "0.4.33"
+molt-forked = { version = "0.6.0", path = "molt", default-features = false }
+molt-macro = { version = "0.6.0", path = "molt-macro" }
+molt-syntax = { version = "0.6.0", path = "molt-syntax" }
+molt-shell = { version = "0.6.0", path = "molt-shell", default-features = false }
+molt-wasm = { version = "0.6.0", path = "molt-wasm" }
+molt-wasm-demo = { version = "0.6.0", path = "molt-wasm/demo" }
+num-bigint = "0.5.1"
+num-traits = "0.2.19"
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+rustyline = { version = "18.0.1", default-features = false }
+syn = { version = "3.0.3", features = ["parsing"] }
+unicode-width = "0.2.2"
+wasm-logger = "0.2.0"
+web-sys = "0.3.104"
+web-time = "1.1.0"
+yew = { version = "0.23.0", default-features = false }
+yew_icons = "0.10.0"
 
 [profile.release]
 opt-level = 3

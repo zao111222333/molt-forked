@@ -9,11 +9,15 @@ repository.workspace = true
 
 [dependencies]
 molt-wasm.workspace = true
-log = "0.4.6"
-web-sys = { version = "0.3", features = ["Element"] }
-wasm-logger = "0.2"
-yew = { version = "0.21", features = ["csr"] }
-yew_icons = {version = "0.8", features = ["BootstrapGithub","FeatherSun","FeatherMoon"]}
+log.workspace = true
+web-sys = { workspace = true, features = ["Element"] }
+wasm-logger.workspace = true
+yew = { workspace = true, features = ["csr"] }
+yew_icons = { workspace = true, features = ["bootstrap", "feather"] }
 
 [build-dependencies]
-chrono = "0.4"
+chrono.workspace = true
+
+[features]
+default = []
+full = ["molt-wasm/full"]

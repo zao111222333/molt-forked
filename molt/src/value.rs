@@ -165,13 +165,17 @@
 //!
 //! [`Value`]: struct.Value.html
 
+#[cfg(feature = "full")]
+use crate::types::MoltBigInt;
 use crate::{
     dict::{dict_to_string, list_to_dict},
     expr::Datum,
     list::{get_list, list_to_string},
     parser::{self, Script},
-    types::{Exception, MoltDict, MoltFloat, MoltInt, MoltList, VarName},
+    types::{Exception, MoltByteArray, MoltDict, MoltFloat, MoltInt, MoltList, VarName},
 };
+#[cfg(feature = "full")]
+use num_traits::{ToPrimitive, Zero};
 use std::{
     any::Any,
     cell::{OnceCell, RefCell},
@@ -367,6 +371,17 @@ impl From<MoltInt> for Value {
     }
 }
 
+#[cfg(feature = "full")]
+impl From<MoltBigInt> for Value {
+    fn from(int: MoltBigInt) -> Self {
+        if let Some(small) = int.to_i64() {
+            Self::from(small)
+        } else {
+            Value::inner_from_data(DataRep::BigInt(Rc::new(int)))
+        }
+    }
+}
+
 impl From<MoltFloat> for Value {
     /// Creates a new `Value` whose data representation is a `MoltFloat`.
     ///
@@ -426,6 +441,36 @@ impl From<&[Value]> for Value {
     }
 }
 
+impl From<Vec<u8>> for Value {
+    fn from(bytes: Vec<u8>) -> Self {
+        Value::inner_from_data(DataRep::ByteArray(Rc::new(bytes)))
+    }
+}
+
+impl From<&[u8]> for Value {
+    fn from(bytes: &[u8]) -> Self {
+        Value::from(bytes.to_vec())
+    }
+}
+
+fn integer_radix(source: &str) -> (u32, &str) {
+    if let Some(rest) = source.strip_prefix("0x").or_else(|| source.strip_prefix("0X")) {
+        (16, rest)
+    } else if let Some(rest) =
+        source.strip_prefix("0o").or_else(|| source.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) =
+        source.strip_prefix("0b").or_else(|| source.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else if source.len() > 1 && source.starts_with('0') {
+        (8, &source[1..])
+    } else {
+        (10, source)
+    }
+}
+
 impl Value {
     /// Returns the empty `Value`, a value whose string representation is the empty
     /// string.
@@ -471,6 +516,17 @@ impl Value {
     /// ```
     pub fn try_as_str(&self) -> Option<&str> {
         self.inner.string_rep.get().map(String::as_str)
+    }
+
+    /// Returns the Tcl bytearray representation. Existing bytearrays are borrowed through
+    /// `Rc`; strings are encoded as UTF-8 and cached without changing the string value.
+    pub fn as_bytes(&self) -> Rc<MoltByteArray> {
+        if let DataRep::ByteArray(bytes) = &*self.inner.data_rep.borrow() {
+            return Rc::clone(bytes);
+        }
+        let bytes = Rc::new(self.as_str().as_bytes().to_vec());
+        *self.inner.data_rep.borrow_mut() = DataRep::ByteArray(Rc::clone(&bytes));
+        bytes
     }
 
     /// Tries to return the `Value` as a `bool`, parsing the
@@ -536,6 +592,11 @@ impl Value {
             // NEXT, if we have a number return whether it's zero or not.
             if let DataRep::Int(int) = *data_ref {
                 return Ok(int != 0);
+            }
+
+            #[cfg(feature = "full")]
+            if let DataRep::BigInt(int) = &*data_ref {
+                return Ok(!int.is_zero());
             }
 
             if let DataRep::Flt(flt) = *data_ref {
@@ -693,6 +754,15 @@ impl Value {
             return Ok(int);
         }
 
+        #[cfg(feature = "full")]
+        if let DataRep::BigInt(int) = &*self.inner.data_rep.borrow() {
+            return int.to_i64().ok_or_else(|| {
+                Exception::molt_err(
+                    format!("integer value too large to represent: {}", int).into(),
+                )
+            });
+        }
+
         // NEXT, Try to parse the string_rep as an integer
         let str = self.as_str();
         let int = Value::get_int(str)?;
@@ -718,26 +788,57 @@ impl Value {
     /// ```
     pub fn get_int(arg: &str) -> Result<MoltInt, Exception> {
         let orig = arg;
-        let mut arg = arg.trim();
-        let mut minus = 1;
-
-        if arg.starts_with('+') {
-            arg = &arg[1..];
-        } else if arg.starts_with('-') {
-            minus = -1;
-            arg = &arg[1..];
-        }
-
-        let parse_result = if let Some(hex) = arg.strip_prefix("0x") {
-            MoltInt::from_str_radix(hex, 16)
+        let mut source = arg.trim();
+        let negative = if let Some(rest) = source.strip_prefix('-') {
+            source = rest;
+            true
         } else {
-            arg.parse::<MoltInt>()
+            source = source.strip_prefix('+').unwrap_or(source);
+            false
         };
+        let (radix, digits) = integer_radix(source);
+        let parsed = i128::from_str_radix(digits, radix)
+            .ok()
+            .and_then(|value| if negative { value.checked_neg() } else { Some(value) })
+            .and_then(|value| MoltInt::try_from(value).ok());
+        parsed.ok_or_else(|| {
+            Exception::molt_err(format!("expected integer but got \"{}\"", orig).into())
+        })
+    }
 
-        match parse_result {
-            Ok(int) => Ok(minus * int),
-            Err(_) => molt_err!("expected integer but got \"{}\"", orig),
+    /// Returns an arbitrary-precision integer, parsing Tcl integer syntax if required.
+    #[cfg(feature = "full")]
+    pub fn as_bignum(&self) -> Result<Rc<MoltBigInt>, Exception> {
+        match &*self.inner.data_rep.borrow() {
+            DataRep::BigInt(int) => return Ok(Rc::clone(int)),
+            DataRep::Int(int) => return Ok(Rc::new(MoltBigInt::from(*int))),
+            _ => {}
         }
+        let int = Rc::new(Self::get_bignum(self.as_str())?);
+        *self.inner.data_rep.borrow_mut() = DataRep::BigInt(Rc::clone(&int));
+        Ok(int)
+    }
+
+    /// Parses a Tcl integer without imposing a fixed-width limit.
+    #[cfg(feature = "full")]
+    pub fn get_bignum(arg: &str) -> Result<MoltBigInt, Exception> {
+        let original = arg;
+        let mut source = arg.trim();
+        let negative = if let Some(rest) = source.strip_prefix('-') {
+            source = rest;
+            true
+        } else {
+            source = source.strip_prefix('+').unwrap_or(source);
+            false
+        };
+        let (radix, digits) = integer_radix(source);
+        let Some(mut value) = MoltBigInt::parse_bytes(digits.as_bytes(), radix) else {
+            return molt_err!("expected integer but got \"{}\"", original);
+        };
+        if negative {
+            value = -value;
+        }
+        Ok(value)
     }
 
     /// Tries to return the `Value` as a `MoltFloat`, parsing the
@@ -769,6 +870,15 @@ impl Value {
         // FIRST, if we have a float then just return it.
         if let DataRep::Flt(flt) = *self.inner.data_rep.borrow() {
             return Ok(flt);
+        }
+
+        #[cfg(feature = "full")]
+        if let DataRep::BigInt(int) = &*self.inner.data_rep.borrow() {
+            return int.to_f64().ok_or_else(|| {
+                Exception::molt_err(
+                    "integer value too large to convert to floating-point".into(),
+                )
+            });
         }
 
         // NEXT, Try to parse the string_rep as a float
@@ -1100,6 +1210,8 @@ impl Value {
         match *iref {
             DataRep::Flt(flt) => Some(Datum::float(flt)),
             DataRep::Int(int) => Some(Datum::int(int)),
+            #[cfg(feature = "full")]
+            DataRep::BigInt(ref int) => Some(Datum::big((**int).clone())),
             _ => None,
         }
     }
@@ -1164,11 +1276,18 @@ enum DataRep {
     /// A Boolean
     Bool(bool),
 
+    /// A Tcl bytearray.
+    ByteArray(Rc<MoltByteArray>),
+
     /// A Molt Dictionary
     Dict(Rc<MoltDict>),
 
     /// A Molt integer
     Int(MoltInt),
+
+    /// An arbitrary-precision Tcl integer.
+    #[cfg(feature = "full")]
+    BigInt(Rc<MoltBigInt>),
 
     /// A Molt float
     Flt(MoltFloat),
@@ -1193,8 +1312,16 @@ impl Display for DataRep {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             DataRep::Bool(flag) => write!(f, "{}", if *flag { 1 } else { 0 }),
+            DataRep::ByteArray(bytes) => {
+                for byte in bytes.iter().copied() {
+                    write!(f, "{}", char::from(byte))?;
+                }
+                Ok(())
+            }
             DataRep::Dict(dict) => write!(f, "{}", dict_to_string(dict)),
             DataRep::Int(int) => write!(f, "{}", int),
+            #[cfg(feature = "full")]
+            DataRep::BigInt(int) => write!(f, "{}", int),
             DataRep::Flt(flt) => Value::fmt_float(f, *flt),
             DataRep::List(list) => write!(f, "{}", list_to_string(list)),
             DataRep::Script(script) => write!(f, "{:?}", script),
@@ -1378,6 +1505,29 @@ mod tests {
         assert_eq!(val.as_int(), molt_err!("expected integer but got \"abc\""));
     }
 
+    #[cfg(feature = "full")]
+    #[test]
+    fn bignum_representation_is_cached_and_downcasts_explicitly() {
+        let value = Value::from("1267650600228229401496703205376");
+        let integer = value.as_bignum().unwrap();
+        assert_eq!(integer.to_string(), value.as_str());
+        assert!(value.as_int().is_err());
+
+        let native = Value::from((*integer).clone());
+        assert_eq!(native.as_str(), "1267650600228229401496703205376");
+        assert_eq!(*native.as_bignum().unwrap(), *integer);
+    }
+
+    #[test]
+    fn bytearray_representation_round_trips_all_byte_values() {
+        let value = Value::from(vec![0, 65, 127, 128, 255]);
+        assert_eq!(&*value.as_bytes(), &[0, 65, 127, 128, 255]);
+        assert_eq!(value.as_str().chars().count(), 5);
+
+        let string = Value::from("值");
+        assert_eq!(&*string.as_bytes(), "值".as_bytes());
+    }
+
     #[test]
     fn get_int() {
         // Test the internal integer parser
@@ -1485,7 +1635,7 @@ mod tests {
         assert!(val.as_script().is_ok());
 
         let val = Value::from("a {b");
-        assert_eq!(val.as_script(), molt_err_uncompleted!("missing close-brace"));
+        assert_eq!(val.as_script(), molt_err!("missing close-brace"));
     }
 
     #[test]

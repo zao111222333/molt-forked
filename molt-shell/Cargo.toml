@@ -12,4 +12,8 @@ documentation.workspace = true
 
 [dependencies]
 molt-forked.workspace = true
-rustyline = "5.0.0"
+rustyline.workspace = true
+
+[features]
+default = ["full"]
+full = ["molt-forked/full"]

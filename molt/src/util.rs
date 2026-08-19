@@ -6,8 +6,133 @@ use crate::tokenizer::Tokenizer;
 use crate::types::*;
 use std::cmp::Ordering;
 
+/// Matches a string using Tcl's glob-style pattern syntax.
+///
+/// The matcher walks UTF-8 byte indices directly and retains only the most recent `*`
+/// backtracking point.  Consequently the common path does not allocate and each pattern atom
+/// is decoded only when it is visited.
+pub(crate) fn glob_match(pattern: &str, text: &str, nocase: bool) -> bool {
+    let mut pattern_index = 0;
+    let mut text_index = 0;
+    let mut star = None;
+
+    loop {
+        while char_at(pattern, pattern_index).is_some_and(|(ch, _)| ch == '*') {
+            pattern_index = char_at(pattern, pattern_index).expect("star is present").1;
+            star = Some((pattern_index, text_index));
+        }
+
+        if pattern_index == pattern.len() {
+            if text_index == text.len() {
+                return true;
+            }
+        } else if let Some((text_char, next_text)) = char_at(text, text_index) {
+            let (matches, next_pattern) =
+                match_atom(pattern, pattern_index, text_char, nocase);
+            if matches {
+                pattern_index = next_pattern;
+                text_index = next_text;
+                continue;
+            }
+        }
+
+        let Some((after_star, previous_text)) = star else {
+            return false;
+        };
+        let Some((_, next_text)) = char_at(text, previous_text) else {
+            return false;
+        };
+        text_index = next_text;
+        pattern_index = after_star;
+        star = Some((after_star, next_text));
+    }
+}
+
+fn char_at(value: &str, index: usize) -> Option<(char, usize)> {
+    value[index..].chars().next().map(|ch| (ch, index + ch.len_utf8()))
+}
+
+fn match_atom(pattern: &str, index: usize, text: char, nocase: bool) -> (bool, usize) {
+    let (atom, mut next) = char_at(pattern, index).expect("pattern index is in bounds");
+    match atom {
+        '?' => (true, next),
+        '\\' => {
+            if let Some((escaped, after)) = char_at(pattern, next) {
+                (chars_equal(escaped, text, nocase), after)
+            } else {
+                (chars_equal('\\', text, nocase), next)
+            }
+        }
+        '[' => {
+            let mut matched = false;
+            while let Some((first, after_first)) = class_char(pattern, next) {
+                if first == ']' {
+                    next = after_first;
+                    break;
+                }
+                let range = char_at(pattern, after_first)
+                    .filter(|(dash, _)| *dash == '-')
+                    .and_then(|(_, after_dash)| class_char(pattern, after_dash))
+                    .filter(|(last, _)| *last != ']');
+                if let Some((last, after_last)) = range {
+                    let text = case_key(text, nocase);
+                    let first = case_key(first, nocase);
+                    let last = case_key(last, nocase);
+                    matched |= first <= text && text <= last;
+                    next = after_last;
+                } else {
+                    matched |= chars_equal(first, text, nocase);
+                    next = after_first;
+                }
+            }
+            (matched, next)
+        }
+        _ => (chars_equal(atom, text, nocase), next),
+    }
+}
+
+fn class_char(pattern: &str, index: usize) -> Option<(char, usize)> {
+    let (ch, next) = char_at(pattern, index)?;
+    if ch == '\\' {
+        char_at(pattern, next).or(Some(('\\', next)))
+    } else {
+        Some((ch, next))
+    }
+}
+
+fn chars_equal(left: char, right: char, nocase: bool) -> bool {
+    left == right || (nocase && left.to_lowercase().eq(right.to_lowercase()))
+}
+
+fn case_key(ch: char, nocase: bool) -> char {
+    if nocase {
+        ch.to_lowercase().next().unwrap_or(ch)
+    } else {
+        ch
+    }
+}
+
 pub fn is_varname_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
+}
+
+/// Returns the character length of an unbraced Tcl variable name prefix.
+pub fn varname_len(input: &str) -> usize {
+    let mut index = 0;
+    let mut characters = 0;
+    while index < input.len() {
+        let rest = &input[index..];
+        if rest.starts_with("::") {
+            index += 2;
+            characters += 2;
+        } else if let Some(ch) = rest.chars().next().filter(|ch| is_varname_char(*ch)) {
+            index += ch.len_utf8();
+            characters += 1;
+        } else {
+            break;
+        }
+    }
+    characters
 }
 
 /// Reads the integer string from the head of the input.  If the function returns `Some`,
@@ -213,6 +338,17 @@ impl StringUtils for str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("a*b?d", "axxxbyd", false));
+        assert!(glob_match("[a-c]at", "bat", false));
+        assert!(glob_match("[abc", "b", false));
+        assert!(glob_match(r"a\*b", "a*b", false));
+        assert!(glob_match("К*", "космос", true));
+        assert!(!glob_match("[a-c]at", "dat", false));
+        assert!(!glob_match("a*b?d", "axxbd", false));
+    }
 
     #[test]
     fn test_util_read_int() {

@@ -9,50 +9,198 @@ use crate::{
     types::*,
     util, *,
 };
-use std::{borrow::Cow, fs};
-cfg_if::cfg_if! {
-  if #[cfg(feature = "wasm")] {
-    use wasm_timer::Instant;
-  }else{
-    use std::time::Instant;
-  }
-}
+#[cfg(feature = "full")]
+use crate::{eval_ptr::EvalPtr, tokenizer::Tokenizer};
+#[cfg(not(feature = "wasm"))]
+use std::time::Instant;
+use std::{borrow::Cow, fs, rc::Rc};
+#[cfg(feature = "wasm")]
+use web_time::Instant;
 
-pub const _APPEND: &str = "append";
-pub const _ARRAY: &str = "array";
 pub const _ASSERT_EQ: &str = "assert_eq";
-pub const _BREAK: &str = "break";
-pub const _CATCH: &str = "catch";
-pub const _CONTINUE: &str = "continue";
-pub const _DICT: &str = "dict";
-pub const _ERROR: &str = "error";
-pub const _EXPR: &str = "expr";
-pub const _FOR: &str = "for";
-pub const _FOREACH: &str = "foreach";
-pub const _GLOBAL: &str = "global";
-pub const _IF: &str = "if";
-pub const _INCR: &str = "incr";
-pub const _INFO: &str = "info";
-pub const _JOIN: &str = "join";
-pub const _LAPPEND: &str = "lappend";
-pub const _LINDEX: &str = "lindex";
-pub const _LIST: &str = "list";
-pub const _LLENGTH: &str = "llength";
-pub const _PROC: &str = "proc";
-pub const _PUTS: &str = "puts";
-pub const _RENAME: &str = "rename";
-pub const _RETURN: &str = "return";
-pub const _SET: &str = "set";
-pub const _STRING: &str = "string";
-pub const _THROW: &str = "throw";
-pub const _TIME: &str = "time";
-pub const _UNSET: &str = "unset";
-pub const _WHILE: &str = "while";
 pub const _SOURCE: &str = "source";
 pub const _EXIT: &str = "exit";
 pub const _PARSE: &str = "parse";
-pub const _PDUMP: &str = "pdump";
-pub const _PCLEAR: &str = "pclear";
+
+macro_rules! builtin_library {
+    (slim) => {
+        StandardLibrary::Slim
+    };
+    (full) => {
+        StandardLibrary::Full
+    };
+}
+
+macro_rules! execute_builtin_entry {
+    (slim, $interp:ident, $argv:ident, $handler:ident) => {
+        Some($handler($interp, $argv))
+    };
+    (full, $interp:ident, $argv:ident, $handler:ident) => {
+        if $interp.standard_library() == StandardLibrary::Full {
+            Some($handler($interp, $argv))
+        } else {
+            None
+        }
+    };
+}
+
+macro_rules! builtin_entry_exists {
+    (slim, $library:ident) => {
+        true
+    };
+    (full, $library:ident) => {
+        $library == StandardLibrary::Full
+    };
+}
+
+#[derive(Clone, Copy)]
+struct BuiltinCommand {
+    name: &'static str,
+    library: StandardLibrary,
+}
+
+macro_rules! define_builtin_commands {
+    ($( $(#[$meta:meta])* $library:ident $name:literal => $handler:ident ),+ $(,)?) => {
+        const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
+            $($(#[$meta])* BuiltinCommand {
+                name: $name,
+                library: builtin_library!($library),
+            },)+
+        ];
+
+        /// Iterates over the standard commands enabled for a library profile.
+        pub(crate) fn builtin_command_names(
+            library: StandardLibrary,
+        ) -> impl Iterator<Item = &'static str> {
+            BUILTIN_COMMANDS.iter().filter_map(move |command| {
+                (command.library == StandardLibrary::Slim
+                    || library == StandardLibrary::Full)
+                    .then_some(command.name)
+            })
+        }
+
+        /// Dispatches a standard command without allocating a registry or hashing its name.
+        #[doc(hidden)]
+        #[inline(always)]
+        pub fn execute_builtin<Ctx>(
+            name: &str,
+            interp: &mut Interp<Ctx>,
+            argv: &[Value],
+        ) -> Option<MoltResult> {
+            match name {
+                $($(#[$meta])* $name => execute_builtin_entry!($library, interp, argv, $handler),)+
+                _ => None,
+            }
+        }
+
+        /// Returns whether a name belongs to the static standard command set.
+        #[doc(hidden)]
+        #[inline(always)]
+        pub fn is_builtin(name: &str, _library: StandardLibrary) -> bool {
+            match name {
+                $($(#[$meta])* $name => builtin_entry_exists!($library, _library),)+
+                _ => false,
+            }
+        }
+    };
+}
+
+define_builtin_commands! {
+    slim "append" => cmd_append,
+    #[cfg(feature = "full")]
+    full "apply" => cmd_apply,
+    slim "array" => cmd_array,
+    slim "assert_eq" => cmd_assert_eq,
+    slim "break" => cmd_break,
+    slim "catch" => cmd_catch,
+    slim "continue" => cmd_continue,
+    #[cfg(feature = "full")]
+    full "concat" => cmd_concat,
+    slim "dict" => cmd_dict,
+    slim "error" => cmd_error,
+    #[cfg(feature = "full")]
+    full "eval" => cmd_eval,
+    slim "expr" => cmd_expr,
+    slim "for" => cmd_for,
+    slim "foreach" => cmd_foreach,
+    slim "global" => cmd_global,
+    slim "if" => cmd_if,
+    slim "incr" => cmd_incr,
+    slim "info" => cmd_info,
+    slim "join" => cmd_join,
+    slim "lappend" => cmd_lappend,
+    #[cfg(feature = "full")]
+    full "lassign" => cmd_lassign,
+    slim "lindex" => cmd_lindex,
+    #[cfg(feature = "full")]
+    full "linsert" => cmd_linsert,
+    slim "list" => cmd_list,
+    slim "llength" => cmd_llength,
+    #[cfg(feature = "full")]
+    full "lmap" => cmd_lmap,
+    #[cfg(feature = "full")]
+    full "lrange" => cmd_lrange,
+    #[cfg(feature = "full")]
+    full "lrepeat" => cmd_lrepeat,
+    #[cfg(feature = "full")]
+    full "lreplace" => cmd_lreplace,
+    #[cfg(feature = "full")]
+    full "lreverse" => cmd_lreverse,
+    slim "proc" => cmd_proc,
+    slim "puts" => cmd_puts,
+    slim "rename" => cmd_rename,
+    slim "return" => cmd_return,
+    slim "set" => cmd_set,
+    #[cfg(feature = "full")]
+    full "split" => cmd_split,
+    slim "string" => cmd_string,
+    #[cfg(feature = "full")]
+    full "subst" => cmd_subst,
+    #[cfg(feature = "full")]
+    full "switch" => cmd_switch,
+    slim "throw" => cmd_throw,
+    slim "time" => cmd_time,
+    #[cfg(feature = "full")]
+    full "try" => cmd_try,
+    slim "unset" => cmd_unset,
+    #[cfg(feature = "full")]
+    full "uplevel" => cmd_uplevel,
+    #[cfg(feature = "full")]
+    full "upvar" => cmd_upvar,
+    slim "while" => cmd_while,
+}
+
+/// # apply lambdaExpr ?arg ...?
+#[cfg(feature = "full")]
+pub fn cmd_apply<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 0, "lambdaExpr ?arg ...?")?;
+    let lambda = argv[1].as_list()?;
+    if !(2..=3).contains(&lambda.len()) {
+        return molt_err!("can't interpret \"{}\" as a lambda expression", argv[1]);
+    }
+    if lambda.len() == 3 && lambda[2].as_str() != "::" {
+        return molt_err!("namespace \"{}\" not found", lambda[2]);
+    }
+    let parameters = lambda[0].as_list()?;
+    validate_parameters(&parameters)?;
+    let mut call = Vec::with_capacity(argv.len() - 1);
+    call.push(argv[0].clone());
+    call.extend(argv[2..].iter().cloned());
+    interp.execute_anonymous(&parameters, &lambda[1], &call)
+}
+
+fn validate_parameters(parameters: &[Value]) -> Result<(), Exception> {
+    for parameter in parameters {
+        let fields = parameter.as_list()?;
+        if fields.is_empty() {
+            return molt_err!("argument with no name");
+        }
+        if fields.len() > 2 {
+            return molt_err!("too many fields in argument specifier \"{}\"", parameter);
+        }
+    }
+    Ok(())
+}
 
 /// # append *varName* ?*value* ...?
 ///
@@ -103,18 +251,46 @@ pub fn cmd_array_exists<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRe
     molt_ok!(Value::from(interp.array_exists(argv[2].as_str())))
 }
 
-/// # array names arrayName
-/// TODO: Add glob matching as a feature, and support standard TCL options.
+/// # array names arrayName ?mode? ?pattern?
 pub fn cmd_array_names<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "arrayName")?;
-    molt_ok!(Value::from(interp.array_names(argv[2].as_str())))
+    check_args(2, argv, 3, 5, "arrayName ?mode? ?pattern?")?;
+    let names = interp.array_names(argv[2].as_str());
+    if argv.len() == 3 {
+        return molt_ok!(names);
+    }
+    let (mode, pattern) = if argv.len() == 4 {
+        ("-glob", argv[3].as_str())
+    } else {
+        (argv[3].as_str(), argv[4].as_str())
+    };
+    let filtered = match mode {
+        "-exact" => names.into_iter().filter(|name| name.as_str() == pattern).collect(),
+        "-glob" => filter_glob(names, pattern),
+        "-regexp" => return molt_err!("regular expression matching is not available"),
+        _ => {
+            return molt_err!(
+                "bad option \"{}\": must be -exact, -glob, or -regexp",
+                mode
+            );
+        }
+    };
+    molt_ok!(filtered)
 }
 
-/// # array get arrayname
-/// TODO: Add glob matching as a feature, and support standard TCL options.
+/// # array get arrayName ?pattern?
 pub fn cmd_array_get<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "arrayName")?;
-    molt_ok!(Value::from(interp.array_get(argv[2].as_str())))
+    check_args(2, argv, 3, 4, "arrayName ?pattern?")?;
+    let values = interp.array_get(argv[2].as_str());
+    let Some(pattern) = argv.get(3).map(Value::as_str) else {
+        return molt_ok!(values);
+    };
+    let mut filtered = Vec::with_capacity(values.len());
+    for pair in values.chunks_exact(2) {
+        if util::glob_match(pattern, pair[0].as_str(), false) {
+            filtered.extend_from_slice(pair);
+        }
+    }
+    molt_ok!(filtered)
 }
 
 /// # parse *script*
@@ -158,14 +334,21 @@ pub fn cmd_array_size<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResu
     molt_ok!(Value::from(interp.array_size(argv[2].as_str()) as MoltInt))
 }
 
-/// # array unset arrayName ?*index*?
+/// # array unset arrayName ?*pattern*?
 pub fn cmd_array_unset<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 4, "arrayName ?index?")?;
+    check_args(2, argv, 3, 4, "arrayName ?pattern?")?;
 
     if argv.len() == 3 {
         interp.array_unset(argv[2].as_str());
     } else {
-        interp.unset_element(argv[2].as_str(), argv[3].as_str());
+        let array = argv[2].as_str();
+        let pattern = argv[3].as_str();
+        let names = interp.array_names(array);
+        for name in names {
+            if util::glob_match(pattern, name.as_str(), false) {
+                interp.unset_element(array, name.as_str());
+            }
+        }
     }
     molt_ok!()
 }
@@ -237,6 +420,23 @@ pub fn cmd_continue<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResul
     Err(Exception::molt_continue())
 }
 
+/// # concat ?arg ...?
+///
+/// Concatenates zero or more Tcl lists into one canonical list.
+#[cfg(feature = "full")]
+pub fn cmd_concat<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    let capacity: usize = argv[1..]
+        .iter()
+        .filter_map(|value| value.try_as_str())
+        .map(str::len)
+        .sum();
+    let mut values = Vec::with_capacity(capacity / 2);
+    for value in &argv[1..] {
+        values.extend(value.as_list()?.iter().cloned());
+    }
+    molt_ok!(values)
+}
+
 /// # dict *subcommand* ?*arg*...?
 ///
 /// <https://www.tcl.tk/man/tcl8.6/TclCmd/dict.htm>
@@ -245,18 +445,44 @@ pub fn cmd_dict<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
         Ctx,
         1,
         [
+            ("append", cmd_dict_append, "dict append dictVarName key ?string ...?"),
             ("create", cmd_dict_new, "dict create ?key value ...?"),
             ("exists", cmd_dict_exists, "dict exists dictionary key ?key ...?"),
             ("get", cmd_dict_get, "dict get dictionary ?key ...?"),
-            ("keys", cmd_dict_keys, "dict keys dictionary"),
+            (
+                "getwithdefault",
+                cmd_dict_get_with_default,
+                "dict getwithdefault dictionary key defaultValue"
+            ),
+            ("incr", cmd_dict_incr, "dict incr dictVarName key ?increment?"),
+            ("keys", cmd_dict_keys, "dict keys dictionary ?pattern?"),
+            ("lappend", cmd_dict_lappend, "dict lappend dictVarName key ?value ...?"),
+            ("merge", cmd_dict_merge, "dict merge ?dictionary ...?"),
             ("remove", cmd_dict_remove, "dict remove dictionary ?key ...?"),
+            ("replace", cmd_dict_replace, "dict replace dictionary ?key value ...?"),
             ("set", cmd_dict_set, "dict set dictVarName key ?key ...? value"),
             ("size", cmd_dict_size, "dict size dictionary"),
             ("unset", cmd_dict_unset, "dict unset dictVarName key ?key ...?"),
-            ("values", cmd_dict_values, "dict values dictionary"),
+            ("values", cmd_dict_values, "dict values dictionary ?pattern?"),
         ],
     );
     f(interp, argv)
+}
+
+/// # dict append dictVarName key ?string ...?
+fn cmd_dict_append<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 0, "dictVarName key ?string ...?")?;
+    let mut dict = match interp.var(&argv[2]) {
+        Ok(value) => (*value.as_dict()?).clone(),
+        Err(_) => dict_new(),
+    };
+    let mut value = dict.get(&argv[3]).map_or_else(String::new, ToString::to_string);
+    value.reserve(argv[4..].iter().map(|item| item.as_str().len()).sum());
+    for item in &argv[4..] {
+        value.push_str(item.as_str());
+    }
+    dict.insert(argv[3].clone(), Value::from(value));
+    interp.set_var_return(&argv[2], Value::from(dict))
 }
 
 /// # dict create ?key value ...?
@@ -320,14 +546,66 @@ fn cmd_dict_get<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     molt_ok!(value)
 }
 
-/// # dict keys *dictionary*
-/// TODO: Add filtering when we have glob matching.
+/// # dict getwithdefault dictionary key defaultValue
+fn cmd_dict_get_with_default<Ctx>(
+    _interp: &mut Interp<Ctx>,
+    argv: &[Value],
+) -> MoltResult {
+    check_args(2, argv, 5, 5, "dictionary key defaultValue")?;
+    let dict = argv[2].as_dict()?;
+    molt_ok!(dict.get(&argv[3]).unwrap_or(&argv[4]).clone())
+}
+
+/// # dict incr dictVarName key ?increment?
+fn cmd_dict_incr<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 5, "dictVarName key ?increment?")?;
+    let mut dict = match interp.var(&argv[2]) {
+        Ok(value) => (*value.as_dict()?).clone(),
+        Err(_) => dict_new(),
+    };
+    let value = add_integer_values(dict.get(&argv[3]), argv.get(4))?;
+    dict.insert(argv[3].clone(), value);
+    interp.set_var_return(&argv[2], Value::from(dict))
+}
+
+/// # dict keys *dictionary* ?*pattern*?
 fn cmd_dict_keys<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "dictionary")?;
+    check_args(2, argv, 3, 4, "dictionary ?pattern?")?;
 
     let dict = argv[2].as_dict()?;
-    let keys: MoltList = dict.keys().cloned().collect();
+    let pattern = argv.get(3).map(Value::as_str);
+    let keys: MoltList = dict
+        .keys()
+        .filter(|key| {
+            pattern.is_none_or(|pattern| util::glob_match(pattern, key.as_str(), false))
+        })
+        .cloned()
+        .collect();
     molt_ok!(keys)
+}
+
+/// # dict lappend dictVarName key ?value ...?
+fn cmd_dict_lappend<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 0, "dictVarName key ?value ...?")?;
+    let mut dict = match interp.var(&argv[2]) {
+        Ok(value) => (*value.as_dict()?).clone(),
+        Err(_) => dict_new(),
+    };
+    let mut list = dict.get(&argv[3]).map_or_else(|| Ok(Vec::new()), Value::to_list)?;
+    list.extend(argv[4..].iter().cloned());
+    dict.insert(argv[3].clone(), Value::from(list));
+    interp.set_var_return(&argv[2], Value::from(dict))
+}
+
+/// # dict merge ?dictionary ...?
+fn cmd_dict_merge<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    let mut output = dict_new();
+    for value in &argv[2..] {
+        for (key, value) in value.as_dict()?.iter() {
+            output.insert(key.clone(), value.clone());
+        }
+    }
+    molt_ok!(output)
 }
 
 /// # dict remove *dictionary* ?*key* ...?
@@ -344,6 +622,21 @@ fn cmd_dict_remove<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult
     }
 
     // NEXT, return it as a new Value.
+    molt_ok!(dict)
+}
+
+/// # dict replace dictionary ?key value ...?
+fn cmd_dict_replace<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 3, 0, "dictionary ?key value ...?")?;
+    if argv.len().is_multiple_of(2) {
+        return molt_err!(
+            "wrong # args: should be \"dict replace dictionary ?key value ...?\""
+        );
+    }
+    let mut dict = (*argv[2].as_dict()?).clone();
+    for pair in argv[3..].chunks_exact(2) {
+        dict.insert(pair[0].clone(), pair[1].clone());
+    }
     molt_ok!(dict)
 }
 
@@ -384,27 +677,56 @@ fn cmd_dict_unset<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     }
 }
 
-/// # dict values *dictionary*
-/// TODO: Add filtering when we have glob matching.
+/// # dict values *dictionary* ?*pattern*?
 fn cmd_dict_values<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "dictionary")?;
+    check_args(2, argv, 3, 4, "dictionary ?pattern?")?;
 
     let dict = argv[2].as_dict()?;
-    let values: MoltList = dict.values().cloned().collect();
+    let pattern = argv.get(3).map(Value::as_str);
+    let values: MoltList = dict
+        .values()
+        .filter(|value| {
+            pattern.is_none_or(|pattern| util::glob_match(pattern, value.as_str(), false))
+        })
+        .cloned()
+        .collect();
     molt_ok!(values)
 }
 
-/// error *message*
+/// error *message* ?*info*? ?*code*?
 ///
 /// Returns an error with the given message.
 ///
-/// ## TCL Liens
-///
-/// * In Standard TCL, `error` can optionally set the stack trace and an error code.
 pub fn cmd_error<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(1, argv, 2, 2, "message")?;
+    check_args(1, argv, 2, 4, "message ?errorInfo? ?errorCode?")?;
+    if argv.len() == 2 {
+        molt_err!(argv[1].clone())
+    } else {
+        Err(Exception::molt_return_err(
+            argv[1].clone(),
+            0,
+            argv.get(3).cloned(),
+            argv.get(2).cloned(),
+        ))
+    }
+}
 
-    molt_err!(argv[1].clone())
+/// # eval arg ?arg ...?
+///
+/// Concatenates its arguments as Tcl lists and evaluates the resulting script.
+#[cfg(feature = "full")]
+pub fn cmd_eval<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 0, "arg ?arg ...?")?;
+
+    if argv.len() == 2 {
+        return interp.eval_value(&argv[1]);
+    }
+
+    let mut words = Vec::new();
+    for value in &argv[1..] {
+        words.extend(value.as_list()?.iter().cloned());
+    }
+    interp.eval(&list_to_string(&words))
 }
 
 /// # exit ?*returnCode*?
@@ -487,47 +809,72 @@ pub fn cmd_for<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     molt_ok!()
 }
 
-/// # foreach *varList* *list* *body*
-///
-/// Loops over the items the list, assigning successive items to the variables in the
-/// *varList* and calling the *body* as a script once for each set of assignments.
-/// On the last iteration, the second and subsequents variables in the *varList* will
-/// be assigned the empty string if there are not enough list elements to fill them.
-///
-/// ## TCL Liens
-///
-/// * In Standard TCL, `foreach` can loop over several lists at the same time.
+/// # foreach *varList* *list* ?*varList list* ...? *body*
 pub fn cmd_foreach<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(1, argv, 4, 4, "varList list body")?;
+    foreach_impl::<_, false>(interp, argv)
+}
 
-    let var_list = &*argv[1].as_list()?;
-    let list = &*argv[2].as_list()?;
-    let body = &argv[3];
+/// # lmap *varList* *list* ?*varList list* ...? *body*
+#[cfg(feature = "full")]
+pub fn cmd_lmap<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    foreach_impl::<_, true>(interp, argv)
+}
 
-    let mut i = 0;
-
-    while i < list.len() {
-        for var in var_list {
-            if i < list.len() {
-                interp.set_var(var, list[i].clone())?;
-                i += 1;
-            } else {
-                interp.set_var(var, Value::empty())?;
-            }
-        }
-
-        let result = interp.eval_value(body);
-
-        if let Err(exception) = result {
-            match exception.code() {
-                ResultCode::Break => break,
-                ResultCode::Continue => (),
-                _ => return Err(exception),
-            }
-        }
+fn foreach_impl<Ctx, const COLLECT: bool>(
+    interp: &mut Interp<Ctx>,
+    argv: &[Value],
+) -> MoltResult {
+    check_args(1, argv, 4, 0, "varList list ?varList list ...? body")?;
+    if !argv.len().is_multiple_of(2) {
+        return molt_err!(
+            "wrong # args: should be \"{} varList list ?varList list ...? body\"",
+            argv[0]
+        );
     }
 
-    molt_ok!()
+    let mut groups: Vec<(Rc<MoltList>, Rc<MoltList>)> =
+        Vec::with_capacity((argv.len() - 2) / 2);
+    let mut iterations = 0;
+    for pair in argv[1..argv.len() - 1].chunks_exact(2) {
+        let variables = pair[0].as_list()?;
+        if variables.is_empty() {
+            return molt_err!("{} varlist is empty", argv[0]);
+        }
+        let values = pair[1].as_list()?;
+        iterations = iterations.max(values.len().div_ceil(variables.len()));
+        groups.push((variables, values));
+    }
+
+    let body = argv.last().expect("argument count checked");
+    let mut output = Vec::with_capacity(if COLLECT { iterations } else { 0 });
+    'iterations: for iteration in 0..iterations {
+        for (variables, values) in &groups {
+            let offset = iteration * variables.len();
+            for (slot, variable) in variables.iter().enumerate() {
+                interp.set_var(
+                    variable,
+                    values.get(offset + slot).cloned().unwrap_or_else(Value::empty),
+                )?;
+            }
+        }
+        match interp.eval_value(body) {
+            Ok(value) => {
+                if COLLECT {
+                    output.push(value);
+                }
+            }
+            Err(exception) => match exception.code() {
+                ResultCode::Break => break 'iterations,
+                ResultCode::Continue => continue 'iterations,
+                _ => return Err(exception),
+            },
+        }
+    }
+    if COLLECT {
+        molt_ok!(output)
+    } else {
+        molt_ok!()
+    }
 }
 
 /// # global ?*varName* ...?
@@ -652,13 +999,44 @@ pub fn cmd_if<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
 /// Increments an integer variable by a value.
 pub fn cmd_incr<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 2, 3, "varName ?increment?")?;
+    let current = interp.optional_var(&argv[1])?;
+    let new_value = add_integer_values(current.as_ref(), argv.get(2))?;
+    interp.set_var_return(&argv[1], new_value)
+}
 
-    let increment: MoltInt = if argv.len() == 3 { argv[2].as_int()? } else { 1 };
+#[cfg(feature = "full")]
+#[inline]
+fn add_integer_values(current: Option<&Value>, increment: Option<&Value>) -> MoltResult {
+    let small_current = current.map_or(Ok(0), Value::as_int);
+    let small_increment = increment.map_or(Ok(1), Value::as_int);
+    if let (Ok(current), Ok(increment)) = (small_current, small_increment) {
+        if let Some(sum) = current.checked_add(increment) {
+            return molt_ok!(sum);
+        }
+    }
 
-    let new_value =
-        increment + interp.var(&argv[1]).and_then(|val| val.as_int()).unwrap_or(0);
+    // Promote only invalid fixed-width combinations to the arbitrary-precision path. This
+    // covers existing bignums and true i64 overflow without charging small integer updates.
+    let current = match current {
+        Some(value) => value.as_bignum()?,
+        None => Rc::new(MoltBigInt::from(0)),
+    };
+    let increment = match increment {
+        Some(value) => value.as_bignum()?,
+        None => Rc::new(MoltBigInt::from(1)),
+    };
+    molt_ok!(current.as_ref() + increment.as_ref())
+}
 
-    interp.set_var_return(&argv[1], new_value.into())
+#[cfg(not(feature = "full"))]
+#[inline]
+fn add_integer_values(current: Option<&Value>, increment: Option<&Value>) -> MoltResult {
+    let current = current.map_or(Ok(0), Value::as_int)?;
+    let increment = increment.map_or(Ok(1), Value::as_int)?;
+    current
+        .checked_add(increment)
+        .map(Value::from)
+        .ok_or_else(|| Exception::molt_err("integer value too large to represent".into()))
 }
 
 /// # info *subcommand* ?*arg*...?
@@ -702,8 +1080,9 @@ pub fn cmd_info_cmdtype<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRe
 }
 
 /// # info commands ?*pattern*?
-pub fn cmd_info_commands<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_ok!(Value::from(interp.command_names()))
+pub fn cmd_info_commands<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 2, 3, "?pattern?")?;
+    molt_ok!(filter_optional_glob(interp.command_names(), argv.get(2)))
 }
 
 /// # info default *procname* *arg* *varname*
@@ -726,37 +1105,50 @@ pub fn cmd_info_exists<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRes
 }
 
 /// # info complete *command*
-pub fn cmd_info_complete<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+pub fn cmd_info_complete<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 3, 3, "command")?;
-
-    if interp.complete(argv[2].as_str()) {
-        molt_ok!(true)
-    } else {
-        molt_ok!(false)
-    }
+    molt_ok!(!crate::syntax::script_status(argv[2].as_str()).is_incomplete())
 }
 
 /// # info globals
 /// TODO: Add glob matching as a feature, and provide optional pattern argument.
-pub fn cmd_info_globals<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_ok!(Value::from(interp.vars_in_global_scope()))
+pub fn cmd_info_globals<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 2, 3, "?pattern?")?;
+    molt_ok!(filter_optional_glob(interp.vars_in_global_scope(), argv.get(2)))
 }
 
 /// # info locals
 /// TODO: Add glob matching as a feature, and provide optional pattern argument.
-pub fn cmd_info_locals<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_ok!(Value::from(interp.vars_in_local_scope()))
+pub fn cmd_info_locals<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 2, 3, "?pattern?")?;
+    molt_ok!(filter_optional_glob(interp.vars_in_local_scope(), argv.get(2)))
 }
 
 /// # info procs ?*pattern*?
-pub fn cmd_info_procs<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_ok!(Value::from(interp.proc_names()))
+pub fn cmd_info_procs<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 2, 3, "?pattern?")?;
+    molt_ok!(filter_optional_glob(interp.proc_names(), argv.get(2)))
 }
 
 /// # info vars
 /// TODO: Add glob matching as a feature, and provide optional pattern argument.
-pub fn cmd_info_vars<Ctx>(interp: &mut Interp<Ctx>, _argv: &[Value]) -> MoltResult {
-    molt_ok!(Value::from(interp.vars_in_scope()))
+pub fn cmd_info_vars<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 2, 3, "?pattern?")?;
+    molt_ok!(filter_optional_glob(interp.vars_in_scope(), argv.get(2)))
+}
+
+fn filter_optional_glob(values: MoltList, pattern: Option<&Value>) -> MoltList {
+    match pattern {
+        Some(pattern) => filter_glob(values, pattern.as_str()),
+        None => values,
+    }
+}
+
+fn filter_glob(values: MoltList, pattern: &str) -> MoltList {
+    values
+        .into_iter()
+        .filter(|value| util::glob_match(pattern, value.as_str(), false))
+        .collect()
 }
 
 /// # join *list* ?*joinString*?
@@ -799,6 +1191,18 @@ pub fn cmd_lappend<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult 
     interp.set_var_return(&argv[1], Value::from(list))
 }
 
+/// # lassign list varName ?varName ...?
+#[cfg(feature = "full")]
+pub fn cmd_lassign<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 3, 0, "list varName ?varName ...?")?;
+
+    let list = argv[1].as_list()?;
+    for (offset, name) in argv[2..].iter().enumerate() {
+        interp.set_var(name, list.get(offset).cloned().unwrap_or_else(Value::empty))?;
+    }
+    molt_ok!(Value::from(&list[usize::min(argv.len() - 2, list.len())..]))
+}
+
 /// # lindex *list* ?*index* ...?
 ///
 /// Returns an element from the list, indexing into nested lists.
@@ -817,7 +1221,7 @@ pub fn lindex_into(list: &Value, indices: &[Value]) -> MoltResult {
 
     for index_val in indices {
         let list = value.as_list()?;
-        let index = index_val.as_int()?;
+        let index = parse_list_index(index_val.as_str(), list.len() as MoltInt - 1)?;
 
         value = if index < 0 || index as usize >= list.len() {
             Value::empty()
@@ -827,6 +1231,20 @@ pub fn lindex_into(list: &Value, indices: &[Value]) -> MoltResult {
     }
 
     molt_ok!(value)
+}
+
+/// # linsert list index ?element ...?
+#[cfg(feature = "full")]
+pub fn cmd_linsert<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 3, 0, "list index ?element ...?")?;
+    let list = argv[1].as_list()?;
+    let raw = parse_list_index(argv[2].as_str(), list.len() as MoltInt)?;
+    let index = raw.clamp(0, list.len() as MoltInt) as usize;
+    let mut output = Vec::with_capacity(list.len() + argv.len().saturating_sub(3));
+    output.extend(list[..index].iter().cloned());
+    output.extend(argv[3..].iter().cloned());
+    output.extend(list[index..].iter().cloned());
+    molt_ok!(output)
 }
 
 /// # list ?*arg*...?
@@ -846,26 +1264,128 @@ pub fn cmd_llength<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult
     molt_ok!(argv[1].as_list()?.len() as MoltInt)
 }
 
-/// # pdump
-///
-/// Dumps profile data.  Developer use only.
-pub fn cmd_pdump<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(1, argv, 1, 1, "")?;
-
-    interp.profile_dump();
-
-    molt_ok!()
+/// # lrange list first last
+#[cfg(feature = "full")]
+pub fn cmd_lrange<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 4, 4, "list first last")?;
+    let list = argv[1].as_list()?;
+    let end = list.len() as MoltInt - 1;
+    let first = parse_list_index(argv[2].as_str(), end)?.max(0) as usize;
+    let last = parse_list_index(argv[3].as_str(), end)?.min(end);
+    if first >= list.len() || last < first as MoltInt {
+        return molt_ok!();
+    }
+    molt_ok!(Value::from(&list[first..=last as usize]))
 }
 
-/// # pclear
-///
-/// Clears profile data.  Developer use only.
-pub fn cmd_pclear<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(1, argv, 1, 1, "")?;
+/// # lrepeat positiveCount value ?value ...?
+#[cfg(feature = "full")]
+pub fn cmd_lrepeat<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 3, 0, "positiveCount value ?value ...?")?;
+    let count = argv[1].as_int()?;
+    if count < 1 {
+        return molt_err!("must have a count of at least 1");
+    }
+    let count = usize::try_from(count)
+        .map_err(|_| Exception::molt_err("list size overflow".into()))?;
+    let capacity = count
+        .checked_mul(argv.len() - 2)
+        .ok_or_else(|| Exception::molt_err("list size overflow".into()))?;
+    let mut output = Vec::with_capacity(capacity);
+    for _ in 0..count {
+        output.extend(argv[2..].iter().cloned());
+    }
+    molt_ok!(output)
+}
 
-    interp.profile_clear();
+/// # lreplace list first last ?element ...?
+#[cfg(feature = "full")]
+pub fn cmd_lreplace<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 4, 0, "list first last ?element ...?")?;
+    let list = argv[1].as_list()?;
+    let end = list.len() as MoltInt - 1;
+    let raw_first = parse_list_index(argv[2].as_str(), end)?;
+    if !list.is_empty() && raw_first >= list.len() as MoltInt {
+        return molt_err!("list doesn't contain element {}", argv[2]);
+    }
+    let first = raw_first.max(0) as usize;
+    let last = parse_list_index(argv[3].as_str(), end)?.min(end);
+    let remove_end = if last < first as MoltInt { first } else { last as usize + 1 };
+    let mut output = Vec::with_capacity(
+        list.len().saturating_sub(remove_end.saturating_sub(first)) + argv.len() - 4,
+    );
+    output.extend(list[..usize::min(first, list.len())].iter().cloned());
+    output.extend(argv[4..].iter().cloned());
+    if remove_end < list.len() {
+        output.extend(list[remove_end..].iter().cloned());
+    }
+    molt_ok!(output)
+}
 
-    molt_ok!()
+/// # lreverse list
+#[cfg(feature = "full")]
+pub fn cmd_lreverse<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 2, "list")?;
+    let mut list = argv[1].to_list()?;
+    list.reverse();
+    molt_ok!(list)
+}
+
+fn parse_list_index(source: &str, end: MoltInt) -> Result<MoltInt, Exception> {
+    let source = source.trim();
+    if let Ok(index) = Value::get_int(source) {
+        return Ok(index);
+    }
+
+    let (base, suffix) = if let Some(suffix) = source.strip_prefix("end") {
+        (end, suffix)
+    } else {
+        let operator = source
+            .char_indices()
+            .skip(1)
+            .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index));
+        let Some(operator) = operator else {
+            return bad_list_index(source);
+        };
+        let base = Value::get_int(&source[..operator]).map_err(|_| {
+            Exception::molt_err(
+                format!(
+                "bad index \"{source}\": must be integer?[+-]integer? or end?[+-]integer?"
+            )
+                .into(),
+            )
+        })?;
+        (base, &source[operator..])
+    };
+
+    if suffix.is_empty() {
+        return Ok(base);
+    }
+    let (operator, operand) = suffix.split_at(1);
+    if !matches!(operator, "+" | "-") || operand.is_empty() {
+        return bad_list_index(source);
+    }
+    let operand = Value::get_int(operand).map_err(|_| {
+        Exception::molt_err(
+            format!(
+            "bad index \"{source}\": must be integer?[+-]integer? or end?[+-]integer?"
+        )
+            .into(),
+        )
+    })?;
+    let index = match operator {
+        "+" => base.checked_add(operand),
+        "-" => base.checked_sub(operand),
+        _ => unreachable!(),
+    };
+    index.ok_or_else(|| Exception::molt_err("integer overflow".into()))
+}
+
+fn bad_list_index(source: &str) -> Result<MoltInt, Exception> {
+    molt_err!(
+        "bad index \"{}\": must be integer?[+-]integer? or end?[+-]integer?",
+        source
+    )
 }
 
 /// # proc *name* *args* *body*
@@ -878,16 +1398,7 @@ pub fn cmd_proc<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     let name = argv[1].as_str();
     let args = &*argv[2].as_list()?;
 
-    // NEXT, validate the argument specs
-    for arg in args {
-        let vec = arg.as_list()?;
-
-        if vec.is_empty() {
-            return molt_err!("argument with no name");
-        } else if vec.len() > 2 {
-            return molt_err!("too many fields in argument specifier \"{}\"", arg);
-        }
-    }
+    validate_parameters(args)?;
 
     // NEXT, add the command.
     interp.add_proc(name, args, &argv[3]);
@@ -1039,6 +1550,27 @@ pub fn cmd_set<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     }
 }
 
+/// # split string ?splitChars?
+#[cfg(feature = "full")]
+pub fn cmd_split<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 3, "string ?splitChars?")?;
+    let source = argv[1].as_str();
+    if source.is_empty() {
+        return molt_ok!();
+    }
+    let split_chars = argv.get(2).map_or(" \n\t\r", Value::as_str);
+    if split_chars.is_empty() {
+        return molt_ok!(source
+            .chars()
+            .map(|ch| Value::from(ch.to_string()))
+            .collect::<MoltList>());
+    }
+    molt_ok!(source
+        .split(|ch| split_chars.contains(ch))
+        .map(Value::from)
+        .collect::<MoltList>())
+}
+
 /// # source *filename*
 ///
 /// Sources the file, returning the result.
@@ -1067,6 +1599,7 @@ pub fn cmd_string<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
                 cmd_string_compare,
                 "string compare ?-nocase? ?-length length? string1 string2"
             ),
+            ("bytelength", cmd_string_bytelength, "string bytelength string"),
             (
                 "equal",
                 cmd_string_equal,
@@ -1082,17 +1615,206 @@ pub fn cmd_string<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
                 cmd_string_last,
                 "string last needleString haystackString ?lastIndex?"
             ),
+            ("index", cmd_string_index, "string index string charIndex"),
+            (
+                "is",
+                cmd_string_is,
+                "string is class ?-strict? ?-failindex varname? string"
+            ),
             ("length", cmd_string_length, "string length string"),
             ("map", cmd_string_map, "string map ?-nocase? mapping string"),
+            ("match", cmd_string_match, "string match ?-nocase? pattern string"),
             ("range", cmd_string_range, "string range string first last"),
-            ("tolower", cmd_string_tolower, "string tolower string"),
-            ("toupper", cmd_string_toupper, "string toupper string"),
-            ("trim", cmd_string_trim, "string trim string"),
-            ("trimleft", cmd_string_trim, "string trimleft string"),
-            ("trimright", cmd_string_trim, "string trimright string"),
+            ("repeat", cmd_string_repeat, "string repeat string count"),
+            (
+                "replace",
+                cmd_string_replace,
+                "string replace string first last ?newstring?"
+            ),
+            ("reverse", cmd_string_reverse, "string reverse string"),
+            ("tolower", cmd_string_tolower, "string tolower string ?first? ?last?"),
+            ("toupper", cmd_string_toupper, "string toupper string ?first? ?last?"),
+            ("trim", cmd_string_trim, "string trim string ?chars?"),
+            ("trimleft", cmd_string_trim, "string trimleft string ?chars?"),
+            ("trimright", cmd_string_trim, "string trimright string ?chars?"),
         ],
     );
     f(interp, argv)
+}
+
+/// # subst ?-nobackslashes? ?-nocommands? ?-novariables? string
+#[cfg(feature = "full")]
+pub fn cmd_subst<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 0, "?-nobackslashes? ?-nocommands? ?-novariables? string")?;
+    let mut backslashes = true;
+    let mut commands = true;
+    let mut variables = true;
+    for option in &argv[1..argv.len() - 1] {
+        match option.as_str() {
+            "-nobackslashes" => backslashes = false,
+            "-nocommands" => commands = false,
+            "-novariables" => variables = false,
+            _ => {
+                return molt_err!(
+                    "bad option \"{}\": must be -nobackslashes, -nocommands, or -novariables",
+                    option
+                );
+            }
+        }
+    }
+    substitute(
+        interp,
+        argv.last().expect("argument count checked").as_str(),
+        backslashes,
+        commands,
+        variables,
+    )
+}
+
+#[cfg(feature = "full")]
+fn substitute<Ctx>(
+    interp: &mut Interp<Ctx>,
+    source: &str,
+    backslashes: bool,
+    commands: bool,
+    variables: bool,
+) -> MoltResult {
+    let mut output = String::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        let remaining = &source[index..];
+        let ch = remaining.chars().next().expect("index is in bounds");
+        if ch == '\\' && backslashes {
+            let mut tokenizer = Tokenizer::new(remaining);
+            output.push(tokenizer.backslash_subst());
+            index = source.len() - tokenizer.as_str().len();
+        } else if ch == '$' && variables {
+            let mut context = EvalPtr::new(remaining);
+            context.skip_char('$');
+            if !context.next_is_varname_char() && !context.next_is('{') {
+                output.push('$');
+                index += 1;
+                continue;
+            }
+            let word = parser::parse_varname(&mut context)?;
+            output.push_str(interp.eval_word(&word)?.as_str());
+            index = source.len() - context.tok().as_str().len();
+        } else if ch == '[' && commands {
+            let mut context = EvalPtr::new(remaining);
+            context.skip_char('[');
+            context.set_bracket_term(true);
+            let script = parser::parse_script(&mut context)?;
+            if !context.next_is(']') {
+                return molt_err!("missing close-bracket");
+            }
+            context.next();
+            index = source.len() - context.tok().as_str().len();
+            match interp.eval_script(&script) {
+                Ok(value) => output.push_str(value.as_str()),
+                Err(exception) => match exception.code() {
+                    ResultCode::Break => return molt_ok!(output),
+                    ResultCode::Continue => {}
+                    ResultCode::Return => output.push_str(exception.value().as_str()),
+                    _ => return Err(exception),
+                },
+            }
+        } else {
+            output.push(ch);
+            index += ch.len_utf8();
+        }
+    }
+    molt_ok!(output)
+}
+
+#[cfg(feature = "full")]
+#[derive(Clone, Copy)]
+enum SwitchMode {
+    Exact,
+    Glob,
+}
+
+/// # switch ?switches? string pattern body ... ?default body?
+#[cfg(feature = "full")]
+pub fn cmd_switch<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 3, 0, "?switches? string pattern body ... ?default body?")?;
+    let mut mode = SwitchMode::Exact;
+    let mut nocase = false;
+    let mut index = 1;
+    while index < argv.len() && argv[index].as_str().starts_with('-') {
+        match argv[index].as_str() {
+            "-exact" => mode = SwitchMode::Exact,
+            "-glob" => mode = SwitchMode::Glob,
+            "-nocase" => nocase = true,
+            "-regexp" | "-indexvar" | "-matchvar" => {
+                return molt_err!("regular expression matching is not available");
+            }
+            "--" => {
+                index += 1;
+                break;
+            }
+            option => {
+                return molt_err!(
+                    "bad option \"{}\": must be -exact, -glob, -indexvar, -matchvar, -nocase, -regexp, or --",
+                    option
+                );
+            }
+        }
+        index += 1;
+    }
+    if index >= argv.len() {
+        return molt_err!(
+            "wrong # args: should be \"switch ?switches? string pattern body ... ?default body?\""
+        );
+    }
+    let source = argv[index].as_str();
+    index += 1;
+    let owned;
+    let pairs = if argv.len() - index == 1 {
+        owned = argv[index].as_list()?;
+        owned.as_slice()
+    } else {
+        &argv[index..]
+    };
+    if !pairs.len().is_multiple_of(2) {
+        return molt_err!("extra switch pattern with no body");
+    }
+
+    let mut selected = None;
+    let mut default = None;
+    for pair in (0..pairs.len()).step_by(2) {
+        let pattern = pairs[pair].as_str();
+        if pattern == "default" && pair + 2 == pairs.len() {
+            default = Some(pair);
+            continue;
+        }
+        let matches = match mode {
+            SwitchMode::Exact => {
+                if nocase {
+                    pattern.to_lowercase() == source.to_lowercase()
+                } else {
+                    pattern == source
+                }
+            }
+            SwitchMode::Glob => util::glob_match(pattern, source, nocase),
+        };
+        if matches {
+            selected = Some(pair);
+            break;
+        }
+    }
+    let Some(mut selected) = selected.or(default) else {
+        return molt_ok!();
+    };
+    while pairs[selected + 1].as_str() == "-" {
+        selected += 2;
+        if selected >= pairs.len() {
+            return molt_err!(
+                "no body specified for pattern \"{}\"",
+                pairs[selected - 2]
+            );
+        }
+    }
+    interp.eval_value(&pairs[selected + 1])
 }
 
 /// string cat ?*arg* ...?
@@ -1104,6 +1826,15 @@ pub fn cmd_string_cat<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRes
     }
 
     molt_ok!(buff)
+}
+
+/// string bytelength *string*
+pub fn cmd_string_bytelength<Ctx>(
+    _interp: &mut Interp<Ctx>,
+    argv: &[Value],
+) -> MoltResult {
+    check_args(2, argv, 3, 3, "string")?;
+    molt_ok!(argv[2].as_bytes().len() as MoltInt)
 }
 
 /// string compare ?-nocase? ?-length length? string1 string2
@@ -1274,6 +2005,159 @@ pub fn cmd_string_last<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRe
     molt_ok!(pos_char)
 }
 
+/// string index *string* *charIndex*
+pub fn cmd_string_index<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 4, "string charIndex")?;
+    let source = argv[2].as_str();
+    let end = source.chars().count() as MoltInt - 1;
+    let index = parse_list_index(argv[3].as_str(), end)?;
+    if index < 0 {
+        return molt_ok!();
+    }
+    molt_ok!(source
+        .chars()
+        .nth(index as usize)
+        .map_or_else(String::new, |ch| ch.to_string()))
+}
+
+/// string is *class* ?-strict? ?-failindex *varname*? *string*
+pub fn cmd_string_is<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 7, "class ?-strict? ?-failindex varname? string")?;
+    let class = argv[2].as_str();
+    let valid_class = matches!(
+        class,
+        "alnum"
+            | "alpha"
+            | "ascii"
+            | "boolean"
+            | "control"
+            | "digit"
+            | "double"
+            | "false"
+            | "graph"
+            | "integer"
+            | "list"
+            | "lower"
+            | "print"
+            | "punct"
+            | "space"
+            | "true"
+            | "upper"
+            | "wideinteger"
+            | "wordchar"
+            | "xdigit"
+    );
+    if !valid_class {
+        return molt_err!(
+            "bad class \"{}\": must be alnum, alpha, ascii, control, boolean, digit, double, false, graph, integer, list, lower, print, punct, space, true, upper, wideinteger, wordchar, or xdigit",
+            class
+        );
+    }
+
+    let mut strict = false;
+    let mut failindex = None;
+    let mut index = 3;
+    while index + 1 < argv.len() {
+        match argv[index].as_str() {
+            "-strict" => strict = true,
+            "-failindex" if index + 2 < argv.len() => {
+                failindex = Some(&argv[index + 1]);
+                index += 1;
+            }
+            option => {
+                return molt_err!(
+                    "bad option \"{}\": must be -failindex or -strict",
+                    option
+                );
+            }
+        }
+        index += 1;
+    }
+    if index + 1 != argv.len() {
+        return molt_err!(
+            "wrong # args: should be \"string is class ?-strict? ?-failindex varname? string\""
+        );
+    }
+    let source = argv[index].as_str();
+    let (valid, failure) =
+        if source.is_empty() { (!strict, 0) } else { string_classify(class, source) };
+    if let Some(variable) = failindex {
+        let offset = if valid { source.chars().count() } else { failure };
+        interp.set_var(variable, Value::from(offset as MoltInt))?;
+    }
+    molt_ok!(valid)
+}
+
+fn string_classify(class: &str, source: &str) -> (bool, usize) {
+    let whole = match class {
+        "boolean" => Some(Value::get_bool(source).is_ok()),
+        "true" => Some(Value::get_bool(source) == Ok(true)),
+        "false" => Some(Value::get_bool(source) == Ok(false)),
+        "double" => Some(Value::get_float(source).is_ok() || string_is_integer(source)),
+        "integer" | "wideinteger" => Some(string_is_integer(source)),
+        "list" => Some(Value::from(source).as_list().is_ok()),
+        _ => None,
+    };
+    if let Some(valid) = whole {
+        return (
+            valid,
+            if valid { source.chars().count() } else { numeric_failure(source) },
+        );
+    }
+
+    for (index, ch) in source.chars().enumerate() {
+        let valid = match class {
+            "alnum" => ch.is_alphanumeric(),
+            "alpha" => ch.is_alphabetic(),
+            "ascii" => ch.is_ascii(),
+            "control" => ch.is_control(),
+            "digit" => ch.is_numeric(),
+            "graph" => !ch.is_control() && !ch.is_whitespace(),
+            "lower" => ch.is_lowercase(),
+            "print" => !ch.is_control(),
+            "punct" => ch.is_ascii_punctuation(),
+            "space" => ch.is_whitespace(),
+            "upper" => ch.is_uppercase(),
+            "wordchar" => ch.is_alphanumeric() || ch == '_',
+            "xdigit" => ch.is_ascii_hexdigit(),
+            _ => unreachable!("class checked by caller"),
+        };
+        if !valid {
+            return (false, index);
+        }
+    }
+    (true, source.chars().count())
+}
+
+fn string_is_integer(source: &str) -> bool {
+    #[cfg(feature = "full")]
+    {
+        Value::get_bignum(source).is_ok()
+    }
+    #[cfg(not(feature = "full"))]
+    {
+        Value::get_int(source).is_ok()
+    }
+}
+
+fn numeric_failure(source: &str) -> usize {
+    let mut seen_digit = false;
+    for (index, ch) in source.chars().enumerate() {
+        let accepted = ch.is_ascii_digit()
+            || (index == 0 && matches!(ch, '+' | '-'))
+            || (index == 1 && ch == 'x' && source.starts_with('0'));
+        if !accepted {
+            return index;
+        }
+        seen_digit |= ch.is_ascii_digit();
+    }
+    if seen_digit {
+        source.chars().count()
+    } else {
+        0
+    }
+}
+
 /// string length *string*
 pub fn cmd_string_length<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 3, 3, "string")?;
@@ -1354,6 +2238,18 @@ pub fn cmd_string_map<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltRes
     molt_ok!(result)
 }
 
+/// string match ?-nocase? *pattern* *string*
+pub fn cmd_string_match<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 5, "?-nocase? pattern string")?;
+    let nocase = argv.len() == 5;
+    if nocase && argv[2].as_str() != "-nocase" {
+        return molt_err!("bad option \"{}\": must be -nocase", argv[2]);
+    }
+    let pattern = argv[argv.len() - 2].as_str();
+    let source = argv[argv.len() - 1].as_str();
+    molt_ok!(util::glob_match(pattern, source, nocase))
+}
+
 /// string range *string* *first* *last*
 pub fn cmd_string_range<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     check_args(2, argv, 5, 5, "string first last")?;
@@ -1377,31 +2273,92 @@ pub fn cmd_string_range<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltR
     molt_ok!(substr)
 }
 
+/// string repeat *string* *count*
+pub fn cmd_string_repeat<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 4, 4, "string count")?;
+    let count = argv[3].as_int()?.max(0) as usize;
+    molt_ok!(argv[2].as_str().repeat(count))
+}
+
+/// string replace *string* *first* *last* ?*newstring*?
+pub fn cmd_string_replace<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 5, 6, "string first last ?newstring?")?;
+    let source = argv[2].as_str();
+    let chars: Vec<char> = source.chars().collect();
+    let end = chars.len() as MoltInt - 1;
+    let first = parse_list_index(argv[3].as_str(), end)?.max(0) as usize;
+    let last = parse_list_index(argv[4].as_str(), end)?;
+    if first >= chars.len() || last < first as MoltInt {
+        return molt_ok!(source);
+    }
+    let after = usize::min(last.saturating_add(1) as usize, chars.len());
+    let replacement = argv.get(5).map_or("", Value::as_str);
+    let mut output = String::with_capacity(source.len() + replacement.len());
+    output.extend(chars[..first].iter());
+    output.push_str(replacement);
+    output.extend(chars[after..].iter());
+    molt_ok!(output)
+}
+
+/// string reverse *string*
+pub fn cmd_string_reverse<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(2, argv, 3, 3, "string")?;
+    molt_ok!(argv[2].as_str().chars().rev().collect::<String>())
+}
+
 /// string tolower *string*
 pub fn cmd_string_tolower<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "string")?;
-
-    let lower = argv[2].as_str().to_lowercase();
-    molt_ok!(lower)
+    string_change_case(argv, false)
 }
 
 /// string toupper *string*
 pub fn cmd_string_toupper<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "string")?;
+    string_change_case(argv, true)
+}
 
-    let upper = argv[2].as_str().to_uppercase();
-    molt_ok!(upper)
+fn string_change_case(argv: &[Value], uppercase: bool) -> MoltResult {
+    check_args(2, argv, 3, 5, "string ?first? ?last?")?;
+    let source = argv[2].as_str();
+    if argv.len() == 3 {
+        return molt_ok!(if uppercase {
+            source.to_uppercase()
+        } else {
+            source.to_lowercase()
+        });
+    }
+    let chars: Vec<char> = source.chars().collect();
+    let end = chars.len() as MoltInt - 1;
+    let first = parse_list_index(argv[3].as_str(), end)?.max(0) as usize;
+    let last = if argv.len() == 5 {
+        parse_list_index(argv[4].as_str(), end)?.min(end)
+    } else {
+        first as MoltInt
+    };
+    if first >= chars.len() || last < first as MoltInt {
+        return molt_ok!(source);
+    }
+    let after = last.saturating_add(1) as usize;
+    let middle: String = chars[first..after].iter().collect();
+    let changed = if uppercase { middle.to_uppercase() } else { middle.to_lowercase() };
+    let mut output = String::with_capacity(source.len());
+    output.extend(chars[..first].iter());
+    output.push_str(&changed);
+    output.extend(chars[after..].iter());
+    molt_ok!(output)
 }
 
 /// string (trim|trimleft|trimright) *string*
 pub fn cmd_string_trim<Ctx>(_interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
-    check_args(2, argv, 3, 3, "string")?;
+    check_args(2, argv, 3, 4, "string ?chars?")?;
 
     let s = argv[2].as_str();
+    let chars = argv.get(3).map(Value::as_str);
+    let matches =
+        |ch: char| chars.map_or_else(|| ch.is_whitespace(), |set| set.contains(ch));
     let trimmed = match argv[1].as_str() {
-        "trimleft" => s.trim_start(),
-        "trimright" => s.trim_end(),
-        _ => s.trim(),
+        "trimleft" => s.trim_start_matches(matches),
+        "trimright" => s.trim_end_matches(matches),
+        _ => s.trim_matches(matches),
     };
 
     molt_ok!(trimmed)
@@ -1440,6 +2397,124 @@ pub fn cmd_time<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     molt_ok!("{} nanoseconds per iteration", avg)
 }
 
+#[cfg(feature = "full")]
+#[derive(Clone, Copy)]
+enum TryHandlerKind {
+    On(ResultCode),
+    Trap,
+}
+
+#[cfg(feature = "full")]
+#[derive(Clone, Copy)]
+struct TryHandler {
+    kind: TryHandlerKind,
+    match_index: usize,
+    variables_index: usize,
+    body_index: usize,
+}
+
+/// # try body ?handler ...? ?finally script?
+#[cfg(feature = "full")]
+pub fn cmd_try<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 0, "body ?handler ...? ?finally script?")?;
+    let mut handlers = Vec::new();
+    let mut finally = None;
+    let mut index = 2;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "finally" => {
+                if index + 2 != argv.len() {
+                    return molt_err!("wrong # args: finally clause must be last");
+                }
+                finally = Some(index + 1);
+                break;
+            }
+            "on" | "trap" if index + 3 < argv.len() => {
+                let variables = argv[index + 2].as_list()?;
+                if variables.len() > 2 {
+                    return molt_err!(
+                        "handler variable list must have at most two elements"
+                    );
+                }
+                let kind = if argv[index].as_str() == "on" {
+                    let code =
+                        argv[index + 1].as_str().parse::<ResultCode>().map_err(|_| {
+                            Exception::molt_err(
+                                format!("bad completion code \"{}\"", argv[index + 1])
+                                    .into(),
+                            )
+                        })?;
+                    TryHandlerKind::On(code)
+                } else {
+                    argv[index + 1].as_list()?;
+                    TryHandlerKind::Trap
+                };
+                handlers.push(TryHandler {
+                    kind,
+                    match_index: index + 1,
+                    variables_index: index + 2,
+                    body_index: index + 3,
+                });
+                index += 4;
+            }
+            clause => {
+                return molt_err!(
+                    "bad handler type \"{}\": must be finally, on, or trap",
+                    clause
+                )
+            }
+        }
+    }
+
+    let mut result = interp.eval_value(&argv[1]);
+    let code = match &result {
+        Ok(_) => ResultCode::Okay,
+        Err(exception) => exception.code(),
+    };
+    let selected = handlers.iter().find(|handler| match handler.kind {
+        TryHandlerKind::On(expected) => expected == code,
+        TryHandlerKind::Trap => {
+            if let Err(exception) = &result {
+                if exception.code() == ResultCode::Error {
+                    let pattern = argv[handler.match_index]
+                        .as_list()
+                        .expect("trap pattern was validated");
+                    let error_code = exception
+                        .error_code()
+                        .as_list()
+                        .expect("error code is always a Tcl list");
+                    return pattern.len() <= error_code.len()
+                        && pattern.iter().zip(error_code.iter()).all(|(a, b)| a == b);
+                }
+            }
+            false
+        }
+    });
+
+    if let Some(handler) = selected {
+        let variables = argv[handler.variables_index]
+            .as_list()
+            .expect("handler variables were validated");
+        let value = match &result {
+            Ok(value) => value.clone(),
+            Err(exception) => exception.value(),
+        };
+        let options = interp.return_options(&result);
+        if let Some(variable) = variables.first() {
+            interp.set_var(variable, value)?;
+        }
+        if let Some(variable) = variables.get(1) {
+            interp.set_var(variable, options)?;
+        }
+        result = interp.eval_value(&argv[handler.body_index]);
+    }
+
+    if let Some(finally) = finally {
+        interp.eval_value(&argv[finally])?;
+    }
+    result
+}
+
 /// # unset ?-nocomplain? *varName*
 ///
 /// Removes the variable from the interpreter.  This is a no op if
@@ -1466,6 +2541,87 @@ pub fn cmd_unset<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
     }
 
     molt_ok!()
+}
+
+/// # uplevel ?level? arg ?arg ...?
+#[cfg(feature = "full")]
+pub fn cmd_uplevel<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 2, 0, "?level? arg ?arg ...?")?;
+    let (level, first_script) = if looks_like_level(argv[1].as_str()) {
+        (scope_level(interp, argv[1].as_str())?, 2)
+    } else {
+        (scope_level(interp, "1")?, 1)
+    };
+    if first_script >= argv.len() {
+        return molt_err!("wrong # args: should be \"uplevel ?level? arg ?arg ...?\"");
+    }
+    let script = concatenate_values(&argv[first_script..])?;
+    interp.eval_at_scope(level, &script)
+}
+
+/// # upvar ?level? otherVar localVar ?otherVar localVar ...?
+#[cfg(feature = "full")]
+pub fn cmd_upvar<Ctx>(interp: &mut Interp<Ctx>, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 3, 0, "?level? otherVar localVar ?otherVar localVar ...?")?;
+    let has_level = argv.len().is_multiple_of(2);
+    let first_pair = usize::from(has_level) + 1;
+    if !(argv.len() - first_pair).is_multiple_of(2) {
+        return molt_err!(
+            "wrong # args: should be \"upvar ?level? otherVar localVar ?otherVar localVar ...?\""
+        );
+    }
+    let level = if has_level {
+        scope_level(interp, argv[1].as_str())?
+    } else {
+        scope_level(interp, "1")?
+    };
+    for pair in argv[first_pair..].chunks_exact(2) {
+        if level == interp.scope_level() && pair[0] == pair[1] {
+            return molt_err!("can't upvar from variable to itself");
+        }
+        interp.upvar_as(level, pair[0].as_str(), pair[1].as_str());
+    }
+    molt_ok!()
+}
+
+#[cfg(feature = "full")]
+fn looks_like_level(source: &str) -> bool {
+    source.starts_with('#') || Value::get_int(source).is_ok()
+}
+
+#[cfg(feature = "full")]
+fn scope_level<Ctx>(interp: &Interp<Ctx>, source: &str) -> Result<usize, Exception> {
+    let current = interp.scope_level();
+    let level = if let Some(absolute) = source.strip_prefix('#') {
+        Value::get_int(absolute)?
+    } else {
+        let relative = Value::get_int(source)?;
+        if relative < 0 {
+            return molt_err!("bad level \"{}\"", source);
+        }
+        let relative = usize::try_from(relative)
+            .map_err(|_| Exception::molt_err(format!("bad level \"{source}\"").into()))?;
+        return current.checked_sub(relative).ok_or_else(|| {
+            Exception::molt_err(format!("bad level \"{source}\"").into())
+        });
+    };
+    if level < 0 || level as usize > current {
+        molt_err!("bad level \"{}\"", source)
+    } else {
+        Ok(level as usize)
+    }
+}
+
+#[cfg(feature = "full")]
+fn concatenate_values(values: &[Value]) -> Result<Value, Exception> {
+    if values.len() == 1 {
+        return Ok(values[0].clone());
+    }
+    let mut words = Vec::new();
+    for value in values {
+        words.extend(value.as_list()?.iter().cloned());
+    }
+    Ok(Value::from(list_to_string(&words)))
 }
 
 /// # while *test* *command*

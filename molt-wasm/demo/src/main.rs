@@ -1,7 +1,7 @@
-use molt_wasm::{molt::prelude::*, RunState, Terminal};
+use molt_wasm::{molt::prelude::*, Terminal, TerminalEntry};
 use std::{mem, rc::Rc};
 use yew::prelude::*;
-use yew_icons::{Icon, IconId};
+use yew_icons::{Icon, IconData};
 include!(concat!(env!("OUT_DIR"), "/compile_info.rs"));
 
 const INIT_CMDS: [&str; 9] = [
@@ -31,12 +31,12 @@ impl App {
         let out = self.interp.eval(&cmd);
         let mut outs = mem::take(&mut self.interp.std_buff);
         outs.push(out);
-        Rc::make_mut(&mut self.interp.context.hist)
-            .push(Terminal::to_hist(cmd.trim().into(), outs));
+        Rc::make_mut(&mut self.interp.context_mut().hist)
+            .push(Terminal::to_entry(cmd, outs));
     }
 }
 pub enum AppMsg {
-    RunCmd(String, bool),
+    RunCmd(String),
     ToggleDark,
 }
 
@@ -46,7 +46,7 @@ pub fn cmd_square(interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     // Get x, if it's an integer
     let x = argv[1].as_int()?;
     let out = x * x;
-    interp.context.num = out as usize;
+    interp.context_mut().num = out as usize;
     molt_ok!(out)
 }
 
@@ -54,7 +54,7 @@ pub fn cmd_about(interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 1, 1, "")?;
     molt_ok!(
         "{} {} ({})\n{} {}\nType \"help\" for more information.",
-        interp.name,
+        interp.name(),
         CRATE_VERSION,
         COMPILE_TIME,
         RUSTC_VERSION,
@@ -64,7 +64,7 @@ pub fn cmd_about(interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
 
 pub fn cmd_clear(interp: &mut Interp<AppCtx>, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 1, 1, "")?;
-    Rc::make_mut(&mut interp.context.hist).clear();
+    Rc::make_mut(&mut interp.context_mut().hist).clear();
     molt_ok!()
 }
 
@@ -148,7 +148,7 @@ const cmd_browser: fn(&mut Interp<AppCtx>, &[Value]) -> Result<Value, Exception>
 
 pub struct AppCtx {
     num: usize,
-    pub hist: Rc<Vec<(RunState, String, Html)>>,
+    pub hist: Rc<Vec<TerminalEntry>>,
 }
 pub struct App {
     darkmode: bool,
@@ -161,7 +161,7 @@ impl Component for App {
     type Properties = ();
 
     fn create(_ctx: &Context<Self>) -> Self {
-        let interp = Interp::new(
+        let interp = InterpBuilder::new(
             AppCtx { num: 0, hist: Rc::new(Vec::new()) },
             gen_command!(
                 AppCtx,
@@ -175,9 +175,14 @@ impl Component for App {
                     ("browser", cmd_browser, "call browser APIs"),
                 ]
             ),
-            false,
-            "molt-wasm-demo",
-        );
+        )
+        .name("molt-wasm-demo")
+        .standard_library(if cfg!(feature = "full") {
+            StandardLibrary::Full
+        } else {
+            StandardLibrary::Slim
+        })
+        .build();
         let mut app = Self { darkmode: true, interp };
         for cmd in INIT_CMDS {
             app.execute(cmd.into());
@@ -187,27 +192,7 @@ impl Component for App {
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            AppMsg::RunCmd(cmd, previous_is_uncompleted) => {
-                if previous_is_uncompleted {
-                    let previous = Rc::make_mut(&mut self.interp.context.hist).pop();
-                    if let Some((_, previous_cmd, previous_out)) = previous {
-                        if cmd.trim().is_empty() {
-                            // If uncompleted continue with nothing, then just return error
-                            Rc::make_mut(&mut self.interp.context.hist).push((
-                                RunState::Err,
-                                previous_cmd,
-                                previous_out,
-                            ));
-                        } else {
-                            self.execute(previous_cmd + "\n" + &cmd)
-                        }
-                    } else {
-                        self.execute(cmd)
-                    }
-                } else {
-                    self.execute(cmd)
-                }
-            }
+            AppMsg::RunCmd(cmd) => self.execute(cmd),
             AppMsg::ToggleDark => self.darkmode = !self.darkmode,
         }
         true
@@ -218,15 +203,15 @@ impl Component for App {
             <>
                 <div>
                     <div onclick={ctx.link().callback(|_|AppMsg::ToggleDark)}>
-                        <Icon icon_id={if self.darkmode{IconId::FeatherMoon}else{IconId::FeatherSun}} height={"20px".to_owned()} width={"20px".to_owned()}/>
+                        <Icon data={if self.darkmode { IconData::FEATHER_MOON } else { IconData::FEATHER_SUN }} height="20px" width="20px"/>
                     </div>
-                    <a href="https://github.com/zao111222333/molt-forked/tree/master/molt-wasm/demo"><code>{"code"}</code><Icon icon_id={IconId::BootstrapGithub} height={"10px".to_owned()} width={"15px".to_owned()}/></a>
-                    <code>{" The context number is "}</code><code style="color:red;">{self.interp.context.num}</code><code>{", run `square [number]` to change it"}</code>
+                    <a href="https://github.com/zao111222333/molt-forked/tree/master/molt-wasm/demo"><code>{"code"}</code><Icon data={IconData::BOOTSTRAP_GITHUB} height="10px" width="15px"/></a>
+                    <code>{" The context number is "}</code><code style="color:red;">{self.interp.context().num}</code><code>{", run `square [number]` to change it"}</code>
                 </div>
                 <Terminal
                     class={if self.darkmode{ "terminal dark" }else{ "terminal" }}
-                    hist={self.interp.context.hist.clone()}
-                    on_run_cmd={ctx.link().callback(|(cmd,previous_is_uncompleted)|AppMsg::RunCmd(cmd,previous_is_uncompleted))}
+                    entries={self.interp.context().hist.clone()}
+                    on_submit={ctx.link().callback(AppMsg::RunCmd)}
                 />
             </>
         }

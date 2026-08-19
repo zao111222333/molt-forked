@@ -1,0 +1,11 @@
+[package]
+name = "molt-syntax"
+description = "Lossless Tcl 8.6 syntax analysis for Molt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

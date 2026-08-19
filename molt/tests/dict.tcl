@@ -128,7 +128,7 @@ test dict-5.5 {dict set: assign into non-dict} {
 # dict keys
 test dict-6.1 {dict keys: signature} {
     dict keys
-} -error {wrong # args: should be "dict keys dictionary"}
+} -error {wrong # args: should be "dict keys dictionary ?pattern?"}
 
 test dict-6.2 {dict keys: empty} {
     dict keys {}
@@ -138,10 +138,14 @@ test dict-6.3 {dict keys: list of keys} {
     dict keys {a 1 b 2}
 } -ok {a b}
 
+test dict-6.4 {dict keys: glob filter} {
+    dict keys {alpha 1 beta 2 alpine 3} al*
+} -ok {alpha alpine}
+
 # dict values
 test dict-7.1 {dict values: signature} {
     dict values
-} -error {wrong # args: should be "dict values dictionary"}
+} -error {wrong # args: should be "dict values dictionary ?pattern?"}
 
 test dict-7.2 {dict values: empty} {
     dict values {}
@@ -150,6 +154,10 @@ test dict-7.2 {dict values: empty} {
 test dict-7.3 {dict values: list of values} {
     dict values {a 1 b 2}
 } -ok {1 2}
+
+test dict-7.4 {dict values: glob filter} {
+    dict values {a alpha b beta c alpine} al*
+} -ok {alpha alpine}
 
 # dict remove
 test dict-8.1 {dict remove: signature} {
@@ -206,3 +214,24 @@ test dict-9.6 {dict unset: inner dict not a dict} {
     set var {a 1 b 2}
     dict unset var b z
 } -error {missing value to go with key}
+
+test dict-10.1 {dict merge and replace preserve dictionary ordering} {
+    list \
+        [dict merge {a 1 b 2} {b 3 c 4}] \
+        [dict replace {a 1 b 2} b 3 c 4]
+} -ok {{a 1 b 3 c 4} {a 1 b 3 c 4}}
+
+test dict-10.2 {dict getwithdefault} {
+    list \
+        [dict getwithdefault {a 1} a fallback] \
+        [dict getwithdefault {a 1} b fallback]
+} -ok {1 fallback}
+
+test dict-10.3 {dict append, lappend, and incr update a variable} {
+    set data {}
+    dict append data text ab cd
+    dict lappend data list a b
+    dict incr data count
+    dict incr data count 4
+    list [dict get $data text] [dict get $data list] [dict get $data count]
+} -ok {abcd {a b} 5}

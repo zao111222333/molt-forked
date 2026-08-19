@@ -40,7 +40,7 @@ proc match_lists {expected got} {
 
 test array-1.1 {array names, no var} {
     array names
-} -error {wrong # args: should be "array names arrayName"}
+} -error {wrong # args: should be "array names arrayName ?mode? ?pattern?"}
 
 test array-1.2 {array names, unknown var} {
     array names unknown_variable
@@ -97,7 +97,7 @@ test array-3.4 {array exists, array var} {
 
 test array-4.1 {array get, no var} {
     array get
-} -error {wrong # args: should be "array get arrayName"}
+} -error {wrong # args: should be "array get arrayName ?pattern?"}
 
 test array-4.2 {array get, unknown var} {
     array get unknown_variable
@@ -116,7 +116,7 @@ test array-4.4 {array get, array var} {
 
 test array-5.1 {array unset, no var} {
     array unset
-} -error {wrong # args: should be "array unset arrayName ?index?"}
+} -error {wrong # args: should be "array unset arrayName ?pattern?"}
 
 test array-5.2 {array unset, unknown var} {
     array unset unknown_variable
@@ -142,6 +142,20 @@ test array-5.5 {array unset, array var, one element} {
     array unset a 1
     array get a
 } -ok {2 two}
+
+test array-5.6 {array get and names accept glob patterns} {
+    array set a {foo 1 bar 2 baz 3}
+    list \
+        [match_dicts {bar 2 baz 3} [array get a b*]] \
+        [match_lists {bar baz} [array names a b*]] \
+        [array names a -exact bar]
+} -ok {1 1 bar}
+
+test array-5.7 {array unset treats the final argument as a glob pattern} {
+    array set a {foo 1 bar 2 baz 3}
+    array unset a b*
+    array names a
+} -ok foo
 
 test array-6.1 {array set, no args} {
     array set

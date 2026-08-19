@@ -154,6 +154,22 @@ impl<'a> Tokenizer<'a> {
                 't' => '\t',   // Tab
                 'v' => '\x0b', // Vertical Tab
 
+                // A backslash-newline and all immediately following horizontal whitespace
+                // are replaced by one space, including inside braced words and list items.
+                '\n' => {
+                    self.skip_while(|ch| matches!(ch, ' ' | '\t'));
+                    ' '
+                }
+
+                // Treat a Windows CRLF source boundary as the same logical newline. Tcl
+                // normally receives translated channel input, while embedders often pass
+                // an in-memory script directly.
+                '\r' if self.is('\n') => {
+                    self.skip();
+                    self.skip_while(|ch| matches!(ch, ' ' | '\t'));
+                    ' '
+                }
+
                 // 1 to 3 octal digits
                 '0'..='7' => {
                     // Note: only works because these digits are single bytes.
@@ -208,6 +224,12 @@ impl<'a> Tokenizer<'a> {
             // Return the backslash; no escape, since no following character.
             '\\'
         }
+    }
+
+    /// Returns whether the remaining input starts with a backslash-newline fold.
+    pub fn is_folded_newline(&self) -> bool {
+        let source = self.as_str();
+        source.starts_with("\\\n") || source.starts_with("\\\r\n")
     }
 }
 
@@ -379,6 +401,8 @@ mod tests {
         assert_eq!(bsubst("\\r-"), ('\r', Some('-')));
         assert_eq!(bsubst("\\t-"), ('\t', Some('-')));
         assert_eq!(bsubst("\\v-"), ('\x0b', Some('-')));
+        assert_eq!(bsubst("\\\n  \tword"), (' ', Some('w')));
+        assert_eq!(bsubst("\\\r\n  \tword"), (' ', Some('w')));
     }
 
     #[test]

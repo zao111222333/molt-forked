@@ -9,6 +9,8 @@ use crate::list;
 use crate::parser::Word;
 use crate::tokenizer::Tokenizer;
 use crate::*;
+#[cfg(feature = "full")]
+use num_traits::{Signed, ToPrimitive, Zero};
 
 //------------------------------------------------------------------------------------------------
 // Datum Representation
@@ -23,10 +25,68 @@ enum Type {
     String,
 }
 
+/// Integer expression state. With the default feature set this is a single-variant wrapper
+/// around `i64`; `full` adds transparent promotion to an arbitrary-precision value.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) enum TclInt {
+    Small(MoltInt),
+    #[cfg(feature = "full")]
+    Big(MoltBigInt),
+}
+
+impl TclInt {
+    fn small(value: MoltInt) -> Self {
+        Self::Small(value)
+    }
+
+    #[cfg(feature = "full")]
+    fn big(value: MoltBigInt) -> Self {
+        value.to_i64().map_or(Self::Big(value), Self::Small)
+    }
+
+    fn is_zero(&self) -> bool {
+        match self {
+            Self::Small(value) => *value == 0,
+            #[cfg(feature = "full")]
+            Self::Big(value) => value.is_zero(),
+        }
+    }
+
+    fn to_float(&self) -> Result<MoltFloat, Exception> {
+        match self {
+            Self::Small(value) => Ok(*value as MoltFloat),
+            #[cfg(feature = "full")]
+            Self::Big(value) => value.to_f64().ok_or_else(|| {
+                Exception::molt_err(
+                    "integer value too large to convert to floating-point".into(),
+                )
+            }),
+        }
+    }
+
+    fn into_value(self) -> Value {
+        match self {
+            Self::Small(value) => Value::from(value),
+            #[cfg(feature = "full")]
+            Self::Big(value) => Value::from(value),
+        }
+    }
+}
+
+impl std::fmt::Display for TclInt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Small(value) => value.fmt(formatter),
+            #[cfg(feature = "full")]
+            Self::Big(value) => value.fmt(formatter),
+        }
+    }
+}
+
 /// A parsed expression value. Each variant contains exactly the state valid for its type.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Datum {
-    Int(MoltInt),
+    Int(TclInt),
     Float(MoltFloat),
     String(String),
 }
@@ -37,7 +97,12 @@ impl Datum {
     }
 
     pub(crate) fn int(int: MoltInt) -> Self {
-        Self::Int(int)
+        Self::Int(TclInt::small(int))
+    }
+
+    #[cfg(feature = "full")]
+    pub(crate) fn big(int: MoltBigInt) -> Self {
+        Self::Int(TclInt::big(int))
     }
 
     pub(crate) fn float(flt: MoltFloat) -> Self {
@@ -58,7 +123,7 @@ impl Datum {
 
     fn is_true(&self) -> bool {
         match self {
-            Self::Int(value) => *value != 0,
+            Self::Int(value) => !value.is_zero(),
             _ => panic!("Datum::is_true called for non-integer"),
         }
     }
@@ -79,12 +144,37 @@ impl Datum {
 //------------------------------------------------------------------------------------------------
 // Functions
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum BuiltinFunc {
     Abs,
+    Acos,
+    Asin,
+    Atan,
+    Atan2,
+    Ceil,
+    Cos,
+    Cosh,
     Double,
+    Entier,
+    Exp,
+    Floor,
+    Fmod,
+    Hypot,
     Int,
+    Log,
+    Log10,
+    Max,
+    Min,
+    Pow,
+    Rand,
     Round,
+    Sin,
+    Sinh,
+    Sqrt,
+    Srand,
+    Tan,
+    Tanh,
+    Wide,
 }
 
 /// Lexical token and operator kind. Keeping this as an enum prevents invalid numeric tags and
@@ -97,6 +187,7 @@ enum Token {
     CloseParen,
     Comma,
     End,
+    Power,
     Multiply,
     Divide,
     Modulo,
@@ -130,13 +221,13 @@ enum Token {
 impl Token {
     const fn precedence(self) -> i32 {
         match self {
-            Self::Multiply | Self::Divide | Self::Modulo => 14,
-            Self::Plus
-            | Self::Minus
+            Self::Power
             | Self::UnaryMinus
             | Self::UnaryPlus
             | Self::Not
-            | Self::BitNot => 13,
+            | Self::BitNot => 15,
+            Self::Multiply | Self::Divide | Self::Modulo => 14,
+            Self::Plus | Self::Minus => 13,
             Self::LeftShift | Self::RightShift => 12,
             Self::Less | Self::Greater | Self::LessOrEqual | Self::GreaterOrEqual => 11,
             Self::Equal | Self::NotEqual => 10,
@@ -156,7 +247,8 @@ impl Token {
     const fn is_binary(self) -> bool {
         matches!(
             self,
-            Self::Multiply
+            Self::Power
+                | Self::Multiply
                 | Self::Divide
                 | Self::Modulo
                 | Self::Plus
@@ -195,6 +287,7 @@ impl Token {
             Self::CloseParen => ")",
             Self::Comma => ",",
             Self::End => "end of expression",
+            Self::Power => "**",
             Self::Multiply => "*",
             Self::Divide => "/",
             Self::Modulo => "%",
@@ -222,6 +315,236 @@ impl Token {
             Self::Not => "!",
             Self::BitNot => "~",
         }
+    }
+}
+
+impl TclInt {
+    fn neg(self) -> Result<Self, Exception> {
+        match self {
+            Self::Small(value) => match value.checked_neg() {
+                Some(value) => Ok(Self::Small(value)),
+                #[cfg(feature = "full")]
+                None => Ok(Self::Big(-MoltBigInt::from(value))),
+                #[cfg(not(feature = "full"))]
+                None => molt_err!("integer overflow"),
+            },
+            #[cfg(feature = "full")]
+            Self::Big(value) => Ok(Self::big(-value)),
+        }
+    }
+
+    fn abs(self) -> Result<Self, Exception> {
+        match self {
+            Self::Small(value) => match value.checked_abs() {
+                Some(value) => Ok(Self::Small(value)),
+                #[cfg(feature = "full")]
+                None => Ok(Self::Big(MoltBigInt::from(value).abs())),
+                #[cfg(not(feature = "full"))]
+                None => molt_err!("integer overflow"),
+            },
+            #[cfg(feature = "full")]
+            Self::Big(value) => Ok(Self::big(value.abs())),
+        }
+    }
+
+    fn bit_not(self) -> Self {
+        match self {
+            Self::Small(value) => Self::Small(!value),
+            #[cfg(feature = "full")]
+            Self::Big(value) => Self::big(!value),
+        }
+    }
+
+    fn arithmetic(self, operator: Token, right: Self) -> Result<Self, Exception> {
+        match (self, right) {
+            (Self::Small(left), Self::Small(right)) => {
+                if matches!(operator, Token::Divide | Token::Modulo) && right == 0 {
+                    return molt_err!("divide by zero");
+                }
+                if operator == Token::Power && right < 0 {
+                    return negative_integer_power(Self::Small(left), right);
+                }
+                let value = match operator {
+                    Token::Power => u32::try_from(right)
+                        .ok()
+                        .and_then(|power| left.checked_pow(power)),
+                    Token::Multiply => left.checked_mul(right),
+                    Token::Divide => checked_floor_div(left, right),
+                    Token::Modulo => checked_floor_rem(left, right),
+                    Token::Plus => left.checked_add(right),
+                    Token::Minus => left.checked_sub(right),
+                    Token::LeftShift if right < 0 => {
+                        checked_small_shift(left, -right, false)
+                    }
+                    Token::LeftShift => checked_small_shift(left, right, true),
+                    Token::RightShift if right < 0 => {
+                        checked_small_shift(left, -right, true)
+                    }
+                    Token::RightShift => checked_small_shift(left, right, false),
+                    _ => return molt_err!("unknown operator in expression"),
+                };
+                if let Some(value) = value {
+                    return Ok(Self::Small(value));
+                }
+                #[cfg(feature = "full")]
+                return Self::big_arithmetic(
+                    MoltBigInt::from(left),
+                    operator,
+                    MoltBigInt::from(right),
+                );
+                #[cfg(not(feature = "full"))]
+                molt_err!("integer overflow")
+            }
+            #[cfg(feature = "full")]
+            (left, right) => {
+                Self::big_arithmetic(left.into_big(), operator, right.into_big())
+            }
+        }
+    }
+
+    fn bitwise(self, operator: Token, right: Self) -> Result<Self, Exception> {
+        match (self, right) {
+            (Self::Small(left), Self::Small(right)) => Ok(Self::Small(match operator {
+                Token::BitAnd => left & right,
+                Token::BitXor => left ^ right,
+                Token::BitOr => left | right,
+                _ => unreachable!(),
+            })),
+            #[cfg(feature = "full")]
+            (left, right) => {
+                let left = left.into_big();
+                let right = right.into_big();
+                Ok(Self::big(match operator {
+                    Token::BitAnd => left & right,
+                    Token::BitXor => left ^ right,
+                    Token::BitOr => left | right,
+                    _ => unreachable!(),
+                }))
+            }
+        }
+    }
+
+    fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Small(left), Self::Small(right)) => left.cmp(right),
+            #[cfg(feature = "full")]
+            (left, right) => left.as_big().cmp(&right.as_big()),
+        }
+    }
+
+    fn to_small(&self) -> Result<MoltInt, Exception> {
+        match self {
+            Self::Small(value) => Ok(*value),
+            #[cfg(feature = "full")]
+            Self::Big(value) => value.to_i64().ok_or_else(|| {
+                Exception::molt_err("integer value too large to represent".into())
+            }),
+        }
+    }
+
+    #[cfg(feature = "full")]
+    fn into_big(self) -> MoltBigInt {
+        match self {
+            Self::Small(value) => MoltBigInt::from(value),
+            Self::Big(value) => value,
+        }
+    }
+
+    #[cfg(feature = "full")]
+    fn as_big(&self) -> std::borrow::Cow<'_, MoltBigInt> {
+        match self {
+            Self::Small(value) => std::borrow::Cow::Owned(MoltBigInt::from(*value)),
+            Self::Big(value) => std::borrow::Cow::Borrowed(value),
+        }
+    }
+
+    #[cfg(feature = "full")]
+    fn big_arithmetic(
+        left: MoltBigInt,
+        operator: Token,
+        right: MoltBigInt,
+    ) -> Result<Self, Exception> {
+        if matches!(operator, Token::Divide | Token::Modulo) && right.is_zero() {
+            return molt_err!("divide by zero");
+        }
+        if operator == Token::Power {
+            if right.is_negative() {
+                return negative_integer_power(
+                    Self::big(left),
+                    right.to_i64().unwrap_or(MoltInt::MIN),
+                );
+            }
+            let Some(power) = right.to_u32() else {
+                return molt_err!("integer exponent too large");
+            };
+            return Ok(Self::big(left.pow(power)));
+        }
+        if matches!(operator, Token::LeftShift | Token::RightShift) {
+            let Some(shift) = right.to_i64() else {
+                return molt_err!("integer shift count too large");
+            };
+            let (left_shift, magnitude) = match operator {
+                Token::LeftShift => (shift >= 0, shift.unsigned_abs()),
+                Token::RightShift => (shift < 0, shift.unsigned_abs()),
+                _ => unreachable!(),
+            };
+            let magnitude = usize::try_from(magnitude).map_err(|_| {
+                Exception::molt_err("integer shift count too large".into())
+            })?;
+            return Ok(Self::big(if left_shift {
+                left << magnitude
+            } else {
+                left >> magnitude
+            }));
+        }
+        let value = match operator {
+            Token::Multiply => left * right,
+            Token::Plus => left + right,
+            Token::Minus => left - right,
+            Token::Divide | Token::Modulo => {
+                let quotient = &left / &right;
+                let remainder = &left % &right;
+                let adjust = !remainder.is_zero()
+                    && remainder.is_negative() != right.is_negative();
+                if operator == Token::Divide {
+                    if adjust {
+                        quotient - 1
+                    } else {
+                        quotient
+                    }
+                } else if adjust {
+                    remainder + right
+                } else {
+                    remainder
+                }
+            }
+            _ => return molt_err!("unknown operator in expression"),
+        };
+        Ok(Self::big(value))
+    }
+}
+
+fn checked_small_shift(value: MoltInt, shift: MoltInt, left: bool) -> Option<MoltInt> {
+    let shift = u32::try_from(shift).ok()?;
+    if left {
+        value.checked_shl(shift)
+    } else if shift >= MoltInt::BITS {
+        Some(if value < 0 { -1 } else { 0 })
+    } else {
+        value.checked_shr(shift)
+    }
+}
+
+fn negative_integer_power(base: TclInt, exponent: MoltInt) -> Result<TclInt, Exception> {
+    let minus_one = TclInt::Small(-1);
+    if base.is_zero() {
+        molt_err!("exponentiation of zero by negative power")
+    } else if base.compare(&TclInt::Small(1)).is_eq() {
+        Ok(TclInt::Small(1))
+    } else if base.compare(&minus_one).is_eq() {
+        Ok(TclInt::Small(if exponent % 2 == 0 { 1 } else { -1 }))
+    } else {
+        Ok(TclInt::Small(0))
     }
 }
 
@@ -262,7 +585,7 @@ pub fn expr<Ctx: 'static>(interp: &mut Interp<Ctx>, expr: &Value) -> MoltResult 
     let value = expr_top_level(interp, expr.as_str())?;
 
     match value {
-        Datum::Int(value) => molt_ok!(Value::from(value)),
+        Datum::Int(value) => molt_ok!(value.into_value()),
         Datum::Float(value) => molt_ok!(Value::from(value)),
         Datum::String(value) => molt_ok!(Value::from(value)),
     }
@@ -386,7 +709,7 @@ fn expr_get_value<Ctx: 'static>(
             // For these operators, we need an integer value.  Convert or return
             // an error.
             value = match value {
-                Datum::Int(value) => Datum::int(value),
+                Datum::Int(value) => Datum::Int(value),
                 Datum::Float(value) => Datum::int(MoltInt::from(value != 0.0)),
                 Datum::String(_) => {
                     if info.no_eval == 0 {
@@ -444,7 +767,12 @@ fn expr_get_value<Ctx: 'static>(
                 value2 = expr_get_value(interp, info, operator.precedence())?;
             }
         } else {
-            value2 = expr_get_value(interp, info, operator.precedence())?;
+            let right_precedence = if operator == Token::Power {
+                operator.precedence() - 1
+            } else {
+                operator.precedence()
+            };
+            value2 = expr_get_value(interp, info, right_precedence)?;
         }
 
         if !info.token.is_binary()
@@ -462,7 +790,8 @@ fn expr_get_value<Ctx: 'static>(
 
         // Carry out the function of the specified operator.
         match operator {
-            Token::Multiply
+            Token::Power
+            | Token::Multiply
             | Token::Divide
             | Token::Modulo
             | Token::Plus
@@ -513,18 +842,15 @@ fn expr_get_value<Ctx: 'static>(
 
 fn eval_unary(operator: Token, value: Datum) -> DatumResult {
     match (operator, value) {
-        (Token::UnaryMinus, Datum::Int(value)) => value
-            .checked_neg()
-            .map(Datum::int)
-            .ok_or_else(|| Exception::molt_err(Value::from("integer overflow"))),
+        (Token::UnaryMinus, Datum::Int(value)) => Ok(Datum::Int(value.neg()?)),
         (Token::UnaryMinus, Datum::Float(value)) => Ok(Datum::float(-value)),
         (Token::UnaryMinus, Datum::String(_)) => illegal_type(Type::String, operator),
         (Token::UnaryPlus, value) if value.is_numeric() => Ok(value),
         (Token::UnaryPlus, value) => illegal_type(value.value_type(), operator),
-        (Token::Not, Datum::Int(value)) => Ok(Datum::int(MoltInt::from(value == 0))),
+        (Token::Not, Datum::Int(value)) => Ok(Datum::int(MoltInt::from(value.is_zero()))),
         (Token::Not, Datum::Float(value)) => Ok(Datum::int(MoltInt::from(value == 0.0))),
         (Token::Not, Datum::String(_)) => illegal_type(Type::String, operator),
-        (Token::BitNot, Datum::Int(value)) => Ok(Datum::int(!value)),
+        (Token::BitNot, Datum::Int(value)) => Ok(Datum::Int(value.bit_not())),
         (Token::BitNot, value) => illegal_type(value.value_type(), operator),
         _ => unreachable!("non-unary token reached unary dispatch"),
     }
@@ -536,21 +862,7 @@ fn eval_arithmetic(operator: Token, left: Datum, right: Datum) -> DatumResult {
             illegal_type(Type::String, operator)
         }
         (Datum::Int(left), Datum::Int(right)) => {
-            let value = match operator {
-                Token::Multiply => left.checked_mul(right),
-                Token::Divide if right == 0 => return molt_err!("divide by zero"),
-                Token::Divide => left.checked_div(right),
-                Token::Modulo if right == 0 => return molt_err!("divide by zero"),
-                Token::Modulo => left.checked_rem(right),
-                Token::Plus => left.checked_add(right),
-                Token::Minus => left.checked_sub(right),
-                Token::LeftShift => Some(left << right),
-                Token::RightShift => Some(left >> right),
-                _ => return molt_err!("unknown operator in expression"),
-            };
-            value
-                .map(Datum::int)
-                .ok_or_else(|| Exception::molt_err(Value::from("integer overflow")))
+            Ok(Datum::Int(left.arithmetic(operator, right)?))
         }
         (left, right) => {
             if matches!(operator, Token::Modulo | Token::LeftShift | Token::RightShift) {
@@ -563,12 +875,12 @@ fn eval_arithmetic(operator: Token, left: Datum, right: Datum) -> DatumResult {
             }
 
             let left = match left {
-                Datum::Int(value) => value as MoltFloat,
+                Datum::Int(value) => value.to_float()?,
                 Datum::Float(value) => value,
                 Datum::String(_) => unreachable!(),
             };
             let right = match right {
-                Datum::Int(value) => value as MoltFloat,
+                Datum::Int(value) => value.to_float()?,
                 Datum::Float(value) => value,
                 Datum::String(_) => unreachable!(),
             };
@@ -576,6 +888,7 @@ fn eval_arithmetic(operator: Token, left: Datum, right: Datum) -> DatumResult {
                 return molt_err!("divide by zero");
             }
             Ok(Datum::float(match operator {
+                Token::Power => left.powf(right),
                 Token::Multiply => left * right,
                 Token::Divide => left / right,
                 Token::Plus => left + right,
@@ -584,6 +897,25 @@ fn eval_arithmetic(operator: Token, left: Datum, right: Datum) -> DatumResult {
             }))
         }
     }
+}
+
+fn checked_floor_div(left: MoltInt, right: MoltInt) -> Option<MoltInt> {
+    let quotient = left.checked_div(right)?;
+    let remainder = left.checked_rem(right)?;
+    Some(if remainder != 0 && (remainder < 0) != (right < 0) {
+        quotient - 1
+    } else {
+        quotient
+    })
+}
+
+fn checked_floor_rem(left: MoltInt, right: MoltInt) -> Option<MoltInt> {
+    let remainder = left.checked_rem(right)?;
+    Some(if remainder != 0 && (remainder < 0) != (right < 0) {
+        remainder + right
+    } else {
+        remainder
+    })
 }
 
 fn eval_bitwise(operator: Token, left: Datum, right: Datum) -> DatumResult {
@@ -595,17 +927,12 @@ fn eval_bitwise(operator: Token, left: Datum, right: Datum) -> DatumResult {
         Datum::Int(value) => value,
         value => return illegal_type(value.value_type(), operator),
     };
-    Ok(Datum::int(match operator {
-        Token::BitAnd => left & right,
-        Token::BitXor => left ^ right,
-        Token::BitOr => left | right,
-        _ => unreachable!(),
-    }))
+    Ok(Datum::Int(left.bitwise(operator, right)?))
 }
 
 fn numeric_truth(value: &Datum, operator: Token) -> Result<bool, Exception> {
     match value {
-        Datum::Int(value) => Ok(*value != 0),
+        Datum::Int(value) => Ok(!value.is_zero()),
         Datum::Float(value) => Ok(*value != 0.0),
         Datum::String(_) => illegal_type(Type::String, operator).map(|_| false),
     }
@@ -620,15 +947,27 @@ fn compare(operator: Token, left: Datum, right: Datum) -> bool {
         (left, Datum::String(right)) => {
             compare_strings(operator, &left.into_string(), &right)
         }
-        (Datum::Int(left), Datum::Int(right)) => compare_ints(operator, left, right),
+        (Datum::Int(left), Datum::Int(right)) => compare_ints(operator, &left, &right),
         (left, right) => {
             let left = match left {
-                Datum::Int(value) => value as MoltFloat,
+                Datum::Int(value) => value.to_float().unwrap_or(
+                    if value.compare(&TclInt::Small(0)).is_lt() {
+                        MoltFloat::NEG_INFINITY
+                    } else {
+                        MoltFloat::INFINITY
+                    },
+                ),
                 Datum::Float(value) => value,
                 Datum::String(_) => unreachable!(),
             };
             let right = match right {
-                Datum::Int(value) => value as MoltFloat,
+                Datum::Int(value) => value.to_float().unwrap_or(
+                    if value.compare(&TclInt::Small(0)).is_lt() {
+                        MoltFloat::NEG_INFINITY
+                    } else {
+                        MoltFloat::INFINITY
+                    },
+                ),
                 Datum::Float(value) => value,
                 Datum::String(_) => unreachable!(),
             };
@@ -645,14 +984,15 @@ fn compare(operator: Token, left: Datum, right: Datum) -> bool {
     }
 }
 
-fn compare_ints(operator: Token, left: MoltInt, right: MoltInt) -> bool {
+fn compare_ints(operator: Token, left: &TclInt, right: &TclInt) -> bool {
+    let ordering = left.compare(right);
     match operator {
-        Token::Less => left < right,
-        Token::Greater => left > right,
-        Token::LessOrEqual => left <= right,
-        Token::GreaterOrEqual => left >= right,
-        Token::Equal => left == right,
-        Token::NotEqual => left != right,
+        Token::Less => ordering.is_lt(),
+        Token::Greater => ordering.is_gt(),
+        Token::LessOrEqual => ordering.is_le(),
+        Token::GreaterOrEqual => ordering.is_ge(),
+        Token::Equal => ordering.is_eq(),
+        Token::NotEqual => !ordering.is_eq(),
         _ => unreachable!(),
     }
 }
@@ -699,10 +1039,9 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
         if expr_looks_like_int(&p) {
             // There's definitely an integer to parse; parse it.
             let token = util::read_int(&mut p).unwrap();
-            let int = Value::get_int(&token)?;
             info.token = Token::Value;
             info.expr = p;
-            return Ok(Datum::int(int));
+            return parse_integer_token(&token);
         } else if let Some(token) = util::read_float(&mut p) {
             info.token = Token::Value;
             info.expr = p;
@@ -780,7 +1119,14 @@ fn expr_lex<Ctx: 'static>(interp: &mut Interp<Ctx>, info: &mut ExprInfo) -> Datu
             Ok(Datum::none())
         }
         Some('*') => {
-            info.token = Token::Multiply;
+            p.skip();
+            if p.peek() == Some('*') {
+                p.skip();
+                info.expr = p;
+                info.token = Token::Power;
+            } else {
+                info.token = Token::Multiply;
+            }
             Ok(Datum::none())
         }
         Some('/') => {
@@ -1009,7 +1355,7 @@ fn parse_and_eval_script<Ctx: 'static>(
         if ctx.next_is(']') {
             ctx.next();
         } else {
-            return molt_err_uncompleted!("missing close-bracket");
+            return molt_err!("missing close-bracket");
         }
     }
 
@@ -1056,15 +1402,20 @@ fn expr_math_func<Ctx>(
         return syntax_error(info);
     }
 
-    let argument = expr_get_value(interp, info, -1)?;
-    if info.token == Token::Comma {
-        return molt_err!("too many arguments for math function");
-    }
-    if info.token != Token::CloseParen {
-        return syntax_error(info);
-    }
-    if info.no_eval == 0 && !argument.is_numeric() {
-        return molt_err!("argument to math function didn't have numeric value");
+    let mut arguments = Vec::new();
+    let mut remaining = info.expr.clone();
+    remaining.skip_while(|ch| ch.is_whitespace());
+    if remaining.is(')') {
+        let _ = expr_lex(interp, info)?;
+    } else {
+        loop {
+            arguments.push(expr_get_value(interp, info, -1)?);
+            match info.token {
+                Token::Comma => continue,
+                Token::CloseParen => break,
+                _ => return syntax_error(info),
+            }
+        }
     }
 
     // NEXT, if we aren't evaluating, return an empty value.
@@ -1074,42 +1425,189 @@ fn expr_math_func<Ctx>(
 
     // NEXT, invoke the math function.
     info.token = Token::Value;
-    function.execute(argument)
+    function.execute(interp, arguments)
 }
 
 impl BuiltinFunc {
     fn from_name(name: &str) -> Result<Self, Exception> {
         match name {
             "abs" => Ok(Self::Abs),
+            "acos" => Ok(Self::Acos),
+            "asin" => Ok(Self::Asin),
+            "atan" => Ok(Self::Atan),
+            "atan2" => Ok(Self::Atan2),
+            "ceil" => Ok(Self::Ceil),
+            "cos" => Ok(Self::Cos),
+            "cosh" => Ok(Self::Cosh),
             "double" => Ok(Self::Double),
+            "entier" => Ok(Self::Entier),
+            "exp" => Ok(Self::Exp),
+            "floor" => Ok(Self::Floor),
+            "fmod" => Ok(Self::Fmod),
+            "hypot" => Ok(Self::Hypot),
             "int" => Ok(Self::Int),
+            "log" => Ok(Self::Log),
+            "log10" => Ok(Self::Log10),
+            "max" => Ok(Self::Max),
+            "min" => Ok(Self::Min),
+            "pow" => Ok(Self::Pow),
+            "rand" => Ok(Self::Rand),
             "round" => Ok(Self::Round),
+            "sin" => Ok(Self::Sin),
+            "sinh" => Ok(Self::Sinh),
+            "sqrt" => Ok(Self::Sqrt),
+            "srand" => Ok(Self::Srand),
+            "tan" => Ok(Self::Tan),
+            "tanh" => Ok(Self::Tanh),
+            "wide" => Ok(Self::Wide),
             _ => molt_err!("unknown math function \"{}\"", name),
         }
     }
 
-    fn execute(self, argument: Datum) -> DatumResult {
-        match (self, argument) {
-            (Self::Abs, Datum::Int(value)) => value
-                .checked_abs()
-                .map(Datum::int)
-                .ok_or_else(|| Exception::molt_err(Value::from("integer overflow"))),
+    fn execute<Ctx>(
+        self,
+        interp: &mut Interp<Ctx>,
+        mut arguments: Vec<Datum>,
+    ) -> DatumResult {
+        let (minimum, maximum) = match self {
+            Self::Rand => (0, 0),
+            Self::Atan2 | Self::Fmod | Self::Hypot | Self::Pow => (2, 2),
+            Self::Max | Self::Min => (1, usize::MAX),
+            _ => (1, 1),
+        };
+        if arguments.len() < minimum || arguments.len() > maximum {
+            return molt_err!("wrong # args for math function");
+        }
+        if arguments.iter().any(|argument| !argument.is_numeric()) {
+            return molt_err!("argument to math function didn't have numeric value");
+        }
+
+        if self == Self::Rand {
+            return Ok(Datum::float(interp.random_unit()));
+        }
+        if self == Self::Max || self == Self::Min {
+            return numeric_extreme(arguments, self == Self::Max);
+        }
+
+        let first = arguments.remove(0);
+        match (self, first) {
+            (Self::Abs, Datum::Int(value)) => Ok(Datum::Int(value.abs()?)),
             (Self::Abs, Datum::Float(value)) => Ok(Datum::float(value.abs())),
-            (Self::Double, Datum::Int(value)) => Ok(Datum::float(value as MoltFloat)),
+            (Self::Acos, value) => checked_math(value, |value| value.acos()),
+            (Self::Asin, value) => checked_math(value, |value| value.asin()),
+            (Self::Atan, value) => checked_math(value, |value| value.atan()),
+            (Self::Atan2, value) => Ok(Datum::float(
+                numeric_float(&value)?.atan2(numeric_float(&arguments[0])?),
+            )),
+            (Self::Ceil, value) => Ok(Datum::float(numeric_float(&value)?.ceil())),
+            (Self::Cos, value) => checked_math(value, |value| value.cos()),
+            (Self::Cosh, value) => checked_math(value, |value| value.cosh()),
+            (Self::Double, Datum::Int(value)) => Ok(Datum::float(value.to_float()?)),
             (Self::Double, Datum::Float(value)) => Ok(Datum::float(value)),
-            (Self::Int, Datum::Int(value)) => Ok(Datum::int(value)),
+            (Self::Entier, Datum::Int(value)) => Ok(Datum::Int(value)),
+            (Self::Entier, Datum::Float(value)) => {
+                Ok(Datum::int(value.floor() as MoltInt))
+            }
+            (Self::Exp, value) => checked_math(value, |value| value.exp()),
+            (Self::Floor, value) => Ok(Datum::float(numeric_float(&value)?.floor())),
+            (Self::Fmod, value) => {
+                let divisor = numeric_float(&arguments[0])?;
+                if divisor == 0.0 {
+                    molt_err!("domain error: argument not in valid range")
+                } else {
+                    checked_math(value, |value| value % divisor)
+                }
+            }
+            (Self::Hypot, value) => Ok(Datum::float(
+                numeric_float(&value)?.hypot(numeric_float(&arguments[0])?),
+            )),
+            (Self::Int, Datum::Int(value)) => Ok(Datum::Int(value)),
             (Self::Int, Datum::Float(value)) => Ok(Datum::int(value as MoltInt)),
-            (Self::Round, Datum::Int(value)) => Ok(Datum::int(value)),
+            (Self::Log, value) => checked_math(value, |value| value.ln()),
+            (Self::Log10, value) => checked_math(value, |value| value.log10()),
+            (Self::Pow, value) => {
+                let power = numeric_float(&arguments[0])?;
+                checked_math(value, |value| value.powf(power))
+            }
+            (Self::Round, Datum::Int(value)) => Ok(Datum::Int(value)),
             (Self::Round, Datum::Float(value)) if value < 0.0 => {
                 Ok(Datum::int((value - 0.5) as MoltInt))
             }
             (Self::Round, Datum::Float(value)) => {
                 Ok(Datum::int((value + 0.5) as MoltInt))
             }
+            (Self::Sin, value) => checked_math(value, |value| value.sin()),
+            (Self::Sinh, value) => checked_math(value, |value| value.sinh()),
+            (Self::Sqrt, value) => checked_math(value, |value| value.sqrt()),
+            (Self::Srand, Datum::Int(value)) => {
+                Ok(Datum::float(interp.seed_random(value.to_small()?)))
+            }
+            (Self::Srand, Datum::Float(value)) => {
+                Ok(Datum::float(interp.seed_random(value as MoltInt)))
+            }
+            (Self::Tan, value) => checked_math(value, |value| value.tan()),
+            (Self::Tanh, value) => checked_math(value, |value| value.tanh()),
+            (Self::Wide, Datum::Int(value)) => Ok(Datum::Int(value)),
+            (Self::Wide, Datum::Float(value)) => Ok(Datum::int(value as MoltInt)),
             (_, Datum::String(_)) => {
                 molt_err!("argument to math function didn't have numeric value")
             }
+            (Self::Rand | Self::Max | Self::Min, _) => unreachable!(),
         }
+    }
+}
+
+fn numeric_float(value: &Datum) -> Result<MoltFloat, Exception> {
+    match value {
+        Datum::Int(value) => value.to_float(),
+        Datum::Float(value) => Ok(*value),
+        Datum::String(_) => {
+            molt_err!("argument to math function didn't have numeric value")
+        }
+    }
+}
+
+fn checked_math(
+    value: Datum,
+    operation: impl FnOnce(MoltFloat) -> MoltFloat,
+) -> DatumResult {
+    let result = operation(numeric_float(&value)?);
+    if result.is_nan() {
+        molt_err!("domain error: argument not in valid range")
+    } else if result.is_infinite() {
+        molt_err!("floating-point value too large to represent")
+    } else {
+        Ok(Datum::float(result))
+    }
+}
+
+fn numeric_extreme(arguments: Vec<Datum>, maximum: bool) -> DatumResult {
+    let has_float = arguments.iter().any(|value| matches!(value, Datum::Float(_)));
+    if has_float {
+        let mut values = arguments.iter().map(numeric_float);
+        let mut result = values.next().expect("arity checked above")?;
+        for value in values {
+            let value = value?;
+            result = if maximum { result.max(value) } else { result.min(value) };
+        }
+        Ok(Datum::float(result))
+    } else {
+        let mut values = arguments.into_iter().map(|value| match value {
+            Datum::Int(value) => value,
+            _ => unreachable!(),
+        });
+        let mut result = values.next().expect("arity checked above");
+        for value in values {
+            let replace = if maximum {
+                result.compare(&value).is_lt()
+            } else {
+                result.compare(&value).is_gt()
+            };
+            if replace {
+                result = value;
+            }
+        }
+        Ok(Datum::Int(result))
     }
 }
 
@@ -1148,8 +1646,7 @@ fn expr_parse_string(string: &str) -> DatumResult {
             if p.at_end() {
                 // Can return an error if the number is too long to represent as a
                 // MoltInt.  This is consistent with Tcl 7.6.  (Tcl 8 uses BigNums.)
-                let int = Value::get_int(&token)?;
-                return Ok(Datum::int(int));
+                return parse_integer_token(&token);
             }
         } else {
             // FIRST, see if it's a double. Skip leading whitespace.
@@ -1172,6 +1669,16 @@ fn expr_parse_string(string: &str) -> DatumResult {
     }
 
     Ok(Datum::string(string))
+}
+
+fn parse_integer_token(token: &str) -> DatumResult {
+    match Value::get_int(token) {
+        Ok(value) => Ok(Datum::int(value)),
+        #[cfg(feature = "full")]
+        Err(_) => Ok(Datum::big(Value::get_bignum(token)?)),
+        #[cfg(not(feature = "full"))]
+        Err(error) => Err(error),
+    }
 }
 
 // Distinguished between decimal integers and floating-point values

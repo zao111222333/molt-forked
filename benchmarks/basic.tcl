@@ -1,5 +1,4 @@
 # Initial set of benchmarks.
-pclear
 
 benchmark ok-1.1 {ok, no arguments} {
     ok
@@ -52,5 +51,3 @@ benchmark join-1.1 {join a list of six items} {
 benchmark subcommand-1.1 {dispatch a string subcommand} {
     string length abcdefghijklmnopqrstuvwxyz
 }
-
-pdump

@@ -2,6 +2,12 @@
 #
 # If I add the "glob" command, I'll use that to pick up the tests.
 
+# Embedders set this marker to match their selected standard-library profile. Keep the historical
+# full default for direct sourcing by applications that do not provide it.
+if {![info exists molt_full]} {
+    set molt_full 1
+}
+
 source append.tcl
 source array.tcl
 source assert_eq.tcl
@@ -33,3 +39,12 @@ source test.tcl
 source throw.tcl
 source unset.tcl
 source while.tcl
+
+if {$molt_full} {
+    source apply.tcl
+    source list86.tcl
+    source subst.tcl
+    source switch.tcl
+    source try.tcl
+    source upvar.tcl
+}

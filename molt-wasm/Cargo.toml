@@ -12,11 +12,10 @@ documentation.workspace = true
 
 [dependencies]
 molt-forked = { workspace = true, features = ["wasm"] }
-web-sys = { version = "0.3", features = ["Element"] }
-gloo = { version = "0.10", features = ["events"] }
-yew = { version = "0.21", features = ["csr"] }
-yew_icons = {version = "0.8", features = [
-    "BootstrapCheckLg",
-    "FontAwesomeSolidXmark",
-    "FontAwesomeSolidEllipsis",
-]}
+web-sys = { workspace = true, features = ["Element", "HtmlTextAreaElement"] }
+yew = { workspace = true, features = ["csr"] }
+yew_icons = { workspace = true, features = ["bootstrap", "font_awesome_solid"] }
+
+[features]
+default = []
+full = ["molt-forked/full"]

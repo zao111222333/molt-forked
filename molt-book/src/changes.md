@@ -1,5 +1,22 @@
 # Annotated Change Log
 
+## New in Molt 0.6.0
+
+* Added `molt-syntax`, re-exported by the interpreter and used for completion checks by the native
+  shell and browser editor. It distinguishes complete, incomplete, and invalid input and reports
+  ordered UTF-8 byte ranges for highlighting. Execution-parser convergence remains a release gate.
+* Updated `molt-shell` to official Rustyline 18.0.1 with cached highlighting/validation and
+  multiline input. Added a synchronized textarea/pre highlighter to `molt-wasm`.
+* Added `InterpBuilder` and slim/full standard-library selection. The `full` feature enables
+  arbitrary-precision integers while remaining WASM-compatible.
+* Expanded Tcl 8.6 behavior for expressions, lists, strings, dictionaries, arrays, procedures,
+  scopes and control flow, including `apply`, `lmap`, `subst`, `switch`, `try`, `uplevel`, and
+  `upvar`.
+* Replaced the old command object API with compile-time `CommandSet` dispatch and made interpreter
+  context access explicit through accessors.
+* Frozen the Tcl 8.6.18 upstream tests and license and added an explicit portable/host compatibility
+  matrix. The `full` compatibility promise remains gated on every portable matrix row passing.
+
 ## New in Molt 0.5.0
 
 * Added the `molt-macro` procedural-macro crate for compile-time command validation and

@@ -14,6 +14,55 @@ use syn::{
 };
 use unicode_width::UnicodeWidthStr;
 
+const RESERVED_COMMAND_NAMES: &[&str] = &[
+    "append",
+    "apply",
+    "array",
+    "assert_eq",
+    "break",
+    "catch",
+    "concat",
+    "continue",
+    "dict",
+    "error",
+    "eval",
+    "expr",
+    "for",
+    "foreach",
+    "global",
+    "if",
+    "incr",
+    "info",
+    "join",
+    "lappend",
+    "lassign",
+    "lindex",
+    "linsert",
+    "list",
+    "llength",
+    "lmap",
+    "lrange",
+    "lrepeat",
+    "lreplace",
+    "lreverse",
+    "proc",
+    "puts",
+    "rename",
+    "return",
+    "set",
+    "split",
+    "string",
+    "subst",
+    "switch",
+    "throw",
+    "time",
+    "try",
+    "unset",
+    "uplevel",
+    "upvar",
+    "while",
+];
+
 struct HelpEntry {
     name: LitStr,
     help: LitStr,
@@ -102,6 +151,20 @@ fn format_help(entries: HelpEntries, reserved: (&str, &str)) -> Result<LitStr> {
     Ok(LitStr::new(&output, span))
 }
 
+fn validate_command_names(entries: &HelpEntries) -> Result<()> {
+    if let Some(entry) = entries
+        .0
+        .iter()
+        .find(|entry| RESERVED_COMMAND_NAMES.contains(&entry.name.value().as_str()))
+    {
+        return Err(Error::new(
+            entry.name.span(),
+            format!("command name {:?} is reserved", entry.name.value()),
+        ));
+    }
+    Ok(())
+}
+
 #[doc(hidden)]
 #[proc_macro]
 pub fn format_subcommand_help(input: TokenStream) -> TokenStream {
@@ -116,6 +179,9 @@ pub fn format_subcommand_help(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn format_command_help(input: TokenStream) -> TokenStream {
     let entries = parse_macro_input!(input as HelpEntries);
+    if let Err(error) = validate_command_names(&entries) {
+        return error.into_compile_error().into();
+    }
     match format_help(entries, ("help", "[-all]")) {
         Ok(output) => output.into_token_stream().into(),
         Err(error) => error.into_compile_error().into(),
@@ -178,5 +244,14 @@ mod tests {
     fn requires_string_literals_and_rejects_old_shape() {
         assert!(syn::parse2::<HelpEntries>(quote!([(name, "help")])).is_err());
         assert!(syn::parse2::<HelpEntries>(quote!([("name", handler, "help")])).is_err());
+    }
+
+    #[test]
+    fn command_help_rejects_builtin_names() {
+        let entries = entries(quote!([("set", "collision")]));
+        assert!(validate_command_names(&entries)
+            .unwrap_err()
+            .to_string()
+            .contains("is reserved"));
     }
 }

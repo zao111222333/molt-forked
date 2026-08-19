@@ -13,26 +13,22 @@ fn main() {
 
         match subcmd {
             "bench" => {
-                let mut interp = Interp::new(
+                let mut interp = InterpBuilder::new(
                     (YourCtx::default(), BenchCtx::new()),
                     gen_command!(
                         (YourCtx, BenchCtx),
-                        [
-                            (_SOURCE, cmd_source),
-                            (_EXIT, cmd_exit),
-                            (_PARSE, cmd_parse),
-                            (_PDUMP, cmd_pdump),
-                            (_PCLEAR, cmd_pclear)
-                        ],
+                        [(_SOURCE, cmd_source), (_EXIT, cmd_exit), (_PARSE, cmd_parse)],
                         [
                             ("ident", cmd_ident, "return a value"),
                             ("measure", measure_cmd, "record a benchmark measurement"),
                             ("ok", cmd_ok, "return an empty value")
                         ]
                     ),
-                    true,
-                    "molt-bench",
-                );
+                )
+                .environment(true)
+                .name("molt-bench")
+                .standard_library(standard_library())
+                .build();
                 molt_shell::benchmark(&mut interp, &args[2..]);
             }
             "shell" => {
@@ -45,22 +41,21 @@ fn main() {
                 }
             }
             "test" => {
-                let mut interp = Interp::new(
+                let mut interp = InterpBuilder::new(
                     (YourCtx::default(), TestCtx::new()),
                     gen_command!(
                         (YourCtx, TestCtx),
-                        [
-                            (_SOURCE, cmd_source),
-                            (_EXIT, cmd_exit),
-                            (_PARSE, cmd_parse),
-                            (_PDUMP, cmd_pdump),
-                            (_PCLEAR, cmd_pclear),
-                        ],
+                        [(_SOURCE, cmd_source), (_EXIT, cmd_exit), (_PARSE, cmd_parse),],
                         [("test", test_cmd, "run a test case")]
                     ),
-                    true,
-                    "molt-test",
-                );
+                )
+                .environment(true)
+                .name("molt-test")
+                .standard_library(standard_library())
+                .build();
+                interp
+                    .set_scalar("molt_full", Value::from(cfg!(feature = "full")))
+                    .expect("test profile marker must be writable");
                 // Keep the recursive-procedure regression below the native main-thread stack
                 // limit, as the Rust integration harness does.
                 interp.set_recursion_limit(200);
@@ -79,6 +74,14 @@ fn main() {
         }
     } else {
         print_help();
+    }
+}
+
+const fn standard_library() -> StandardLibrary {
+    if cfg!(feature = "full") {
+        StandardLibrary::Full
+    } else {
+        StandardLibrary::Slim
     }
 }
 

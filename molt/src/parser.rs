@@ -51,7 +51,7 @@
 use crate::{
     eval_ptr::EvalPtr,
     types::{Exception, VarName},
-    util::is_varname_char,
+    util::varname_len,
     value::Value,
 };
 
@@ -233,7 +233,10 @@ pub(crate) fn parse_braced_word(ctx: &mut EvalPtr) -> Result<Word, Exception> {
                 let result = Ok(Word::Value(Value::from(text)));
                 ctx.skip(); // Skip the closing brace
 
-                if ctx.at_end_of_command() || ctx.next_is_line_white() {
+                if ctx.at_end_of_command()
+                    || ctx.next_is_line_white()
+                    || ctx.next_is_folded_newline()
+                {
                     return result;
                 } else {
                     return molt_err!("extra characters after close-brace");
@@ -241,14 +244,13 @@ pub(crate) fn parse_braced_word(ctx: &mut EvalPtr) -> Result<Word, Exception> {
             }
         } else if ctx.next_is('\\') {
             text.push_str(ctx.token(start));
-            ctx.skip();
+            if ctx.next_is_folded_newline() {
+                text.push(ctx.backslash_subst());
+            } else {
+                ctx.skip();
 
-            // If there's no character it's because we're at the end; and there's
-            // no close brace.
-            if let Some(ch) = ctx.next() {
-                if ch == '\n' {
-                    text.push(' ');
-                } else {
+                // Backslashes other than backslash-newline are literal in a braced word.
+                if let Some(ch) = ctx.next() {
                     text.push('\\');
                     text.push(ch);
                 }
@@ -259,7 +261,7 @@ pub(crate) fn parse_braced_word(ctx: &mut EvalPtr) -> Result<Word, Exception> {
         }
     }
 
-    molt_err_uncompleted!("missing close-brace")
+    molt_err!("missing close-brace")
 }
 
 /// Parses a quoted word, handling backslash, variable, and command substitution. It's
@@ -298,7 +300,10 @@ pub(crate) fn parse_quoted_word(ctx: &mut EvalPtr) -> Result<Word, Exception> {
                 tokens.push_str(ctx.token(start));
             }
             ctx.skip_char('"');
-            if !ctx.at_end_of_command() && !ctx.next_is_line_white() {
+            if !ctx.at_end_of_command()
+                && !ctx.next_is_line_white()
+                && !ctx.next_is_folded_newline()
+            {
                 return molt_err!("extra characters after close-quote");
             } else {
                 return Ok(tokens.take());
@@ -337,6 +342,12 @@ fn parse_bare_word(ctx: &mut EvalPtr, index_flag: bool) -> Result<Word, Exceptio
             if start != ctx.mark() {
                 tokens.push_str(ctx.token(start));
             }
+            if ctx.next_is_folded_newline() {
+                // The Tcl pre-pass turns this sequence into word-separating whitespace.
+                ctx.backslash_subst();
+                start = ctx.mark();
+                break;
+            }
             tokens.push_char(ctx.backslash_subst());
             start = ctx.mark();
         } else {
@@ -368,7 +379,7 @@ fn parse_brackets(ctx: &mut EvalPtr) -> Result<Script, Exception> {
         if ctx.next_is(']') {
             ctx.next();
         } else {
-            return molt_err_uncompleted!("missing close-bracket");
+            return molt_err!("missing close-bracket");
         }
     }
 
@@ -404,7 +415,7 @@ pub(crate) fn parse_varname(ctx: &mut EvalPtr) -> Result<Word, Exception> {
         ctx.skip_while(|ch| *ch != '}');
 
         if ctx.at_end() {
-            return molt_err_uncompleted!("missing close-brace for variable name");
+            return molt_err!("missing close-brace for variable name");
         }
 
         let var_name = parse_varname_literal(ctx.token(start));
@@ -418,7 +429,8 @@ pub(crate) fn parse_varname(ctx: &mut EvalPtr) -> Result<Word, Exception> {
         }
     } else {
         let start = ctx.mark();
-        ctx.skip_while(|ch| is_varname_char(*ch));
+        let length = varname_len(ctx.tok().as_str());
+        ctx.tok().skip_over(length);
         let name = ctx.token(start).to_string();
 
         if !ctx.next_is('(') {
@@ -428,6 +440,9 @@ pub(crate) fn parse_varname(ctx: &mut EvalPtr) -> Result<Word, Exception> {
             // Array; parse out the word that evaluates to the index.
             ctx.skip();
             let index = parse_bare_word(ctx, true)?;
+            if !ctx.next_is(')') {
+                return molt_err!("missing close-parenthesis for variable name");
+            }
             ctx.skip_char(')');
             Ok(Word::ArrayRef(name, Box::new(index)))
         }
@@ -629,7 +644,7 @@ mod tests {
         assert_eq!(cmds[0].words, vec![Word::Value(Value::from("a"))]);
         assert_eq!(cmds[1].words, vec![Word::Value(Value::from("b"))]);
 
-        assert_eq!(parse("a {"), molt_err_uncompleted!("missing close-brace"));
+        assert_eq!(parse("a {"), molt_err!("missing close-brace"));
     }
 
     #[test]
@@ -670,6 +685,10 @@ mod tests {
     fn test_parse_braced_word() {
         // Simple string
         assert_eq!(pbrace("{abc}"), Ok((Word::Value(Value::from("abc")), "".into())));
+        assert_eq!(
+            pbrace("{one\\\n   two}"),
+            Ok((Word::Value(Value::from("one two")), "".into()))
+        );
 
         // Simple string with following space
         assert_eq!(pbrace("{abc} "), Ok((Word::Value(Value::from("abc")), " ".into())));
@@ -710,9 +729,9 @@ mod tests {
         );
 
         // Strings with missing close-brace
-        assert_eq!(pbrace("{abc"), molt_err_uncompleted!("missing close-brace"));
+        assert_eq!(pbrace("{abc"), molt_err!("missing close-brace"));
 
-        assert_eq!(pbrace("{a{b}c"), molt_err_uncompleted!("missing close-brace"));
+        assert_eq!(pbrace("{a{b}c"), molt_err!("missing close-brace"));
     }
 
     fn pbrace(input: &str) -> Result<(Word, String), Exception> {
@@ -738,6 +757,10 @@ mod tests {
         );
 
         assert_eq!(pqw("\"-\\x77\" "), Ok((Word::Value(Value::from("-w")), " ".into())));
+        assert_eq!(
+            pqw("\"one\\\n  two\""),
+            Ok((Word::Value(Value::from("one two")), "".into()))
+        );
 
         // Variable reference
         assert_eq!(
@@ -813,6 +836,10 @@ mod tests {
         assert_eq!(
             pbare("-\\x77- ", false),
             Ok((Word::Value(Value::from("-w-")), " ".into()))
+        );
+        assert_eq!(
+            pbare("one\\\n  two", false),
+            Ok((Word::Value(Value::from("one")), "two".into()))
         );
 
         assert_eq!(
@@ -892,7 +919,7 @@ mod tests {
             ]
         );
 
-        assert_eq!(pbrack("[incomplete"), molt_err_uncompleted!("missing close-bracket"));
+        assert_eq!(pbrack("[incomplete"), molt_err!("missing close-bracket"));
     }
 
     fn pbrack(input: &str) -> Result<Script, Exception> {
@@ -908,6 +935,15 @@ mod tests {
         assert_eq!(pvar("$abc."), Ok((Word::VarRef("abc".into()), ".".into())));
         assert_eq!(pvar("$a.bc"), Ok((Word::VarRef("a".into()), ".bc".into())));
         assert_eq!(pvar("$a1_.bc"), Ok((Word::VarRef("a1_".into()), ".bc".into())));
+        assert_eq!(pvar("$a:b"), Ok((Word::VarRef("a".into()), ":b".into())));
+        assert_eq!(
+            pvar("$变量::值-tail"),
+            Ok((Word::VarRef("变量::值".into()), "-tail".into()))
+        );
+        assert_eq!(
+            pvar("$::namespace::value-tail"),
+            Ok((Word::VarRef("::namespace::value".into()), "-tail".into()))
+        );
 
         // Array names
         assert_eq!(
@@ -920,10 +956,7 @@ mod tests {
 
         // Braced var names
         assert_eq!(pvar("${a}b"), Ok((Word::VarRef("a".into()), "b".into())));
-        assert_eq!(
-            pvar("${ab"),
-            molt_err_uncompleted!("missing close-brace for variable name")
-        );
+        assert_eq!(pvar("${ab"), molt_err!("missing close-brace for variable name"));
 
         // Braced var names with arrays
         assert_eq!(
@@ -937,6 +970,10 @@ mod tests {
         // Just a bare "$"
         assert_eq!(pvar("$"), Ok((Word::Value(Value::from("$")), "".into())));
         assert_eq!(pvar("$."), Ok((Word::Value(Value::from("$")), ".".into())));
+        assert_eq!(
+            pvar("$array(index"),
+            molt_err!("missing close-parenthesis for variable name")
+        );
     }
 
     fn pvar(input: &str) -> Result<(Word, String), Exception> {

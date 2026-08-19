@@ -1,7 +1,155 @@
 use molt_forked::prelude::*;
+use molt_forked::syntax::{self, ParseStatus, SyntaxAnalysis, SyntaxKind};
+use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
-use rustyline::Editor;
+use rustyline::highlight::{CmdKind, Highlighter};
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Editor, Helper};
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fs;
+
+#[derive(Debug)]
+struct CachedAnalysis {
+    source: String,
+    analysis: SyntaxAnalysis,
+}
+
+/// Rustyline adapter backed by Molt's lossless Tcl parser.
+#[derive(Debug)]
+struct MoltHelper {
+    cache: RefCell<Option<CachedAnalysis>>,
+    color: bool,
+    #[cfg(test)]
+    parse_count: std::cell::Cell<usize>,
+}
+
+impl MoltHelper {
+    fn new() -> Self {
+        Self {
+            cache: RefCell::new(None),
+            color: std::env::var_os("NO_COLOR").is_none(),
+            #[cfg(test)]
+            parse_count: std::cell::Cell::new(0),
+        }
+    }
+
+    fn ensure_analysis(&self, source: &str) {
+        let current = self.cache.borrow();
+        if current.as_ref().is_some_and(|cached| cached.source == source) {
+            return;
+        }
+        drop(current);
+
+        let analysis = syntax::analyze_script(source);
+        #[cfg(test)]
+        self.parse_count.set(self.parse_count.get() + 1);
+        *self.cache.borrow_mut() =
+            Some(CachedAnalysis { source: source.to_owned(), analysis });
+    }
+
+    fn status(&self, source: &str) -> ParseStatus {
+        self.ensure_analysis(source);
+        self.cache
+            .borrow()
+            .as_ref()
+            .expect("analysis was just populated")
+            .analysis
+            .status()
+    }
+
+    fn highlighted(&self, source: &str) -> String {
+        self.ensure_analysis(source);
+        let cache = self.cache.borrow();
+        render_ansi(
+            source,
+            &cache.as_ref().expect("analysis was just populated").analysis,
+        )
+    }
+}
+
+impl Completer for MoltHelper {
+    type Candidate = String;
+}
+
+impl Hinter for MoltHelper {
+    type Hint = String;
+}
+
+impl Highlighter for MoltHelper {
+    fn highlight<'line>(&self, line: &'line str, _pos: usize) -> Cow<'line, str> {
+        if !self.color || line.is_empty() {
+            return Cow::Borrowed(line);
+        }
+        Cow::Owned(self.highlighted(line))
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, kind: CmdKind) -> bool {
+        kind != CmdKind::ForcedRefresh
+    }
+}
+
+impl Validator for MoltHelper {
+    fn validate(
+        &self,
+        context: &mut ValidationContext<'_>,
+    ) -> rustyline::Result<ValidationResult> {
+        Ok(if self.status(context.input()).is_incomplete() {
+            ValidationResult::Incomplete
+        } else {
+            // Invalid-but-complete Tcl is submitted so the interpreter can produce the real
+            // structured Tcl error instead of trapping the user in the editor.
+            ValidationResult::Valid(None)
+        })
+    }
+}
+
+impl Helper for MoltHelper {}
+
+fn render_ansi(source: &str, analysis: &SyntaxAnalysis) -> String {
+    let mut output = String::with_capacity(source.len() + analysis.tokens().len() * 8);
+    let mut active = "";
+
+    for token in analysis.tokens() {
+        let style = ansi_style(token.kind(), token.depth());
+        if style != active {
+            output.push_str("\x1b[0m");
+            output.push_str(style);
+            active = style;
+        }
+        let range = token.range();
+        output.push_str(&source[range.start()..range.end()]);
+    }
+    if !active.is_empty() {
+        output.push_str("\x1b[0m");
+    }
+    output
+}
+
+fn ansi_style(kind: SyntaxKind, depth: u16) -> &'static str {
+    match kind {
+        SyntaxKind::Plain | SyntaxKind::Whitespace | SyntaxKind::Word => "",
+        SyntaxKind::Comment => "\x1b[2;90m",
+        SyntaxKind::Command => "\x1b[1;36m",
+        SyntaxKind::String => "\x1b[32m",
+        SyntaxKind::Variable => "\x1b[33m",
+        SyntaxKind::Escape => "\x1b[35m",
+        SyntaxKind::Delimiter => match depth % 4 {
+            0 => "\x1b[36m",
+            1 => "\x1b[35m",
+            2 => "\x1b[34m",
+            _ => "\x1b[33m",
+        },
+        SyntaxKind::Separator => "\x1b[90m",
+        SyntaxKind::Number => "\x1b[34m",
+        SyntaxKind::Operator => "\x1b[1;35m",
+        SyntaxKind::Function => "\x1b[36m",
+        SyntaxKind::Invalid => "\x1b[4;31m",
+        _ => "",
+    }
+}
 
 /// Invokes an interactive REPL for the given interpreter, using `rustyline` line editing.
 ///
@@ -27,7 +175,14 @@ use std::fs;
 /// molt_shell::repl(&mut interp);
 /// ```
 pub fn repl<Ctx: 'static>(interp: &mut Interp<Ctx>) {
-    let mut rl = Editor::<()>::new();
+    let mut rl = match Editor::<MoltHelper, DefaultHistory>::new() {
+        Ok(editor) => editor,
+        Err(error) => {
+            eprintln!("unable to initialize line editor: {error}");
+            return;
+        }
+    };
+    rl.set_helper(Some(MoltHelper::new()));
 
     loop {
         let readline = if let Ok(pscript) = interp.scalar("tcl_prompt1") {
@@ -44,11 +199,10 @@ pub fn repl<Ctx: 'static>(interp: &mut Interp<Ctx>) {
 
         match readline {
             Ok(line) => {
-                let line = line.trim();
-                if !line.is_empty() {
-                    match interp.eval(line) {
+                if !line.trim().is_empty() {
+                    match interp.eval(&line) {
                         Ok(value) => {
-                            rl.add_history_entry(line);
+                            let _ = rl.add_history_entry(line.as_str());
 
                             // Don't output empty values.
                             if !value.as_str().is_empty() {
@@ -56,6 +210,7 @@ pub fn repl<Ctx: 'static>(interp: &mut Interp<Ctx>) {
                             }
                         }
                         Err(exception) => {
+                            let _ = rl.add_history_entry(line.as_str());
                             println!("{}", exception.value());
                         }
                     }
@@ -151,5 +306,54 @@ fn execute_script<Ctx: 'static>(
             eprintln!("{}", exception.value());
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::*;
+    use std::fmt::Write as _;
+
+    fn strip_ansi(source: &str) -> String {
+        let mut output = String::new();
+        let mut chars = source.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for code in chars.by_ref() {
+                    if code == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                output.write_char(ch).unwrap();
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn cache_is_shared_by_highlighter_and_validator_status() {
+        let helper = MoltHelper::new();
+        let line = "if {$value > 1} {puts ok}";
+        assert_eq!(strip_ansi(&helper.highlighted(line)), line);
+        assert_eq!(helper.status(line), ParseStatus::Complete);
+        assert_eq!(helper.parse_count.get(), 1);
+    }
+
+    #[test]
+    fn incomplete_and_invalid_have_distinct_submission_behavior() {
+        let helper = MoltHelper::new();
+        assert!(helper.status("set value {").is_incomplete());
+        assert_eq!(helper.status("set value {x}tail"), ParseStatus::Invalid);
+    }
+
+    #[test]
+    fn ansi_highlighting_preserves_text_and_unicode() {
+        let helper = MoltHelper::new();
+        let line = "# 注释\nputs \"值=$value\"";
+        let highlighted = helper.highlighted(line);
+        assert_eq!(strip_ansi(&highlighted), line);
+        assert!(highlighted.contains("\x1b["));
     }
 }

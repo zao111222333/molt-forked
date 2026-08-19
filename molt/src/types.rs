@@ -38,6 +38,10 @@ use std::str::FromStr;
 /// supports BigNums, or switch to `i128`.
 pub type MoltInt = i64;
 
+/// Tcl's arbitrary-precision integer representation, available with `full`.
+#[cfg(feature = "full")]
+pub type MoltBigInt = num_bigint::BigInt;
+
 /// The standard floating point type for Molt code.
 ///
 /// The interpreter uses this type internally for all Molt floating-point values.
@@ -50,6 +54,9 @@ pub type MoltFloat = f64;
 /// Lists are an important data structure, both in Molt code proper and in Rust code
 /// that implements and works with Molt commands.  A list is a vector of `Value`s.
 pub type MoltList = Vec<Value>;
+
+/// Tcl bytearray storage.
+pub type MoltByteArray = Vec<u8>;
 
 /// The standard dictionary type for Molt code.
 ///
@@ -242,9 +249,6 @@ impl ResultCode {
 pub struct Exception {
     /// The kind of exception
     code: ResultCode,
-    /// Require input in interact mode
-    /// equal to Error otherwise
-    uncompleted: bool,
     /// The result value
     value: Value,
 
@@ -282,10 +286,6 @@ impl Exception {
     #[inline]
     pub fn is_error(&self) -> bool {
         self.code == ResultCode::Error
-    }
-    #[inline]
-    pub fn is_uncompleted(&self) -> bool {
-        self.uncompleted
     }
     /// Returns the exception's error code, only if `is_error()`.
     /// exception.
@@ -483,7 +483,6 @@ impl Exception {
             level: 0,
             next_code: ResultCode::Error,
             error_data: Some(data),
-            uncompleted: false,
         }
     }
     #[inline]
@@ -491,10 +490,6 @@ impl Exception {
         if let Some(data) = self.error_data.as_mut() {
             data.is_new = false;
         }
-    }
-    #[inline]
-    pub fn to_uncomplete(&mut self) {
-        self.uncompleted = true;
     }
 
     /// Creates an `Error` exception with the given error code and message.  An
@@ -525,7 +520,6 @@ impl Exception {
             level: 0,
             next_code: ResultCode::Error,
             error_data: Some(data),
-            uncompleted: false,
         }
     }
 
@@ -543,7 +537,6 @@ impl Exception {
             level: 1,
             next_code: ResultCode::Okay,
             error_data: None,
-            uncompleted: false,
         }
     }
 
@@ -566,7 +559,6 @@ impl Exception {
             level,
             next_code,
             error_data: None,
-            uncompleted: false,
         }
     }
 
@@ -595,7 +587,6 @@ impl Exception {
             level,
             next_code: ResultCode::Error,
             error_data: Some(data),
-            uncompleted: false,
         }
     }
 
@@ -612,7 +603,6 @@ impl Exception {
             level: 0,
             next_code: ResultCode::Break,
             error_data: None,
-            uncompleted: false,
         }
     }
 
@@ -629,7 +619,6 @@ impl Exception {
             level: 0,
             next_code: ResultCode::Continue,
             error_data: None,
-            uncompleted: false,
         }
     }
 

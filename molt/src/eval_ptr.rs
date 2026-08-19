@@ -5,7 +5,7 @@
 //! * Consider delegating skip_while() to iter::skip_while(), and replacing the
 //!   "skip_sequence" methods with some useful predicate functions.
 
-use crate::tokenizer::Tokenizer;
+use crate::{tokenizer::Tokenizer, util::varname_len};
 
 /// A struct that holds the parsing context: the iterator over the input string, and
 /// any relevant flags.
@@ -169,18 +169,26 @@ impl<'a> EvalPtr<'a> {
 
     /// Is the current character a valid variable name character?
     pub fn next_is_varname_char(&mut self) -> bool {
-        match self.tok.peek() {
-            Some(c) => c.is_alphanumeric() || c == '_',
-            None => false,
-        }
+        varname_len(self.tok.as_str()) > 0
+    }
+
+    /// Is the next source sequence a backslash-newline pre-pass substitution?
+    pub fn next_is_folded_newline(&self) -> bool {
+        self.tok.is_folded_newline()
     }
 
     /// Skips past any whitespace at the current point, *including* newlines.
     /// When this is complete we will be at the end of the script or on a non-white-space
     /// character.
     pub fn skip_block_white(&mut self) {
-        while !self.at_end() && self.next_is_block_white() {
-            self.tok.next();
+        while !self.at_end() {
+            if self.next_is_block_white() {
+                self.tok.next();
+            } else if self.next_is('\\') && self.next_is_folded_newline() {
+                self.tok.backslash_subst();
+            } else {
+                break;
+            }
         }
     }
 
@@ -188,8 +196,14 @@ impl<'a> EvalPtr<'a> {
     /// When this is complete we will be at the end of the script, at the end of the
     /// current command, or on a non-white-space character.
     pub fn skip_line_white(&mut self) {
-        while !self.at_end() && self.next_is_line_white() {
-            self.tok.next();
+        while !self.at_end() {
+            if self.next_is_line_white() {
+                self.tok.next();
+            } else if self.next_is('\\') && self.next_is_folded_newline() {
+                self.tok.backslash_subst();
+            } else {
+                break;
+            }
         }
     }
 

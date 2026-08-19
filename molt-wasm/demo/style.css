@@ -1,45 +1,155 @@
-.terminal .history{
-  height:50vh;
-  background: #f0f0f0;
-  padding: 10px 5px 10px 5px;
+.terminal {
+  --molt-bg: #f0f0f0;
+  --molt-fg: #333333;
+  --molt-border: #cccccc;
+  --molt-comment: #6a737d;
+  --molt-command: #006d8f;
+  --molt-string: #237a3b;
+  --molt-variable: #9a6700;
+  --molt-escape: #8250df;
+  --molt-number: #0550ae;
+  --molt-operator: #cf222e;
+  --molt-invalid: #d1242f;
+  --molt-depth-0: #0969da;
+  --molt-depth-1: #8250df;
+  --molt-depth-2: #9a6700;
+  --molt-depth-3: #1a7f37;
+  color: var(--molt-fg);
 }
-.terminal.dark .history{
-  background: #343434;
+
+.terminal.dark {
+  --molt-bg: #343434;
+  --molt-fg: #e0e0e0;
+  --molt-border: #777777;
+  --molt-comment: #8b949e;
+  --molt-command: #79c0ff;
+  --molt-string: #7ee787;
+  --molt-variable: #e3b341;
+  --molt-escape: #d2a8ff;
+  --molt-number: #79c0ff;
+  --molt-operator: #ff7b72;
+  --molt-invalid: #ff7b72;
+  --molt-depth-0: #79c0ff;
+  --molt-depth-1: #d2a8ff;
+  --molt-depth-2: #e3b341;
+  --molt-depth-3: #7ee787;
 }
-.terminal .history .command{
-  color:#333333;
-}
-.terminal.dark .history .command{
-  color:#e0e0e0;
-}
-.terminal .history .stdout-icon{
-  color:#3fb43f;
-}
-.terminal .history .stdout{
-  color:#56a2c7;
-}
-.terminal.dark .history .stdout{
-  color:#5ab5d7
-}
-.terminal .history .stderr-icon{
-  color:#ff5151;
-}
-.terminal .history .stderr{
-  color:#f0776d;
-}
-.terminal .input {
-  padding: 5px;
-  color:#333333;
-  background: #f0f0f0;
-  border: none;
-  border-top:1px solid #ccc; 
+
+.terminal .history {
   box-sizing: border-box;
+  height: 50vh;
+  margin: 0;
+  padding: 10px 5px;
+  overflow: auto;
+  background: var(--molt-bg);
 }
-.terminal.dark .input {
-  color:#e0e0e0;
-  background: #343434;
-  border-top:1px solid #777;;
+
+.terminal .history-entry {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: nowrap;
 }
+
+.terminal .history-command {
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.terminal .history .command,
+.terminal .stdout,
+.terminal .stderr {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.terminal .history-output {
+  padding-left: 15px;
+}
+
+.terminal .stdout-icon {
+  color: #3fb43f;
+}
+
+.terminal .stdout {
+  color: #56a2c7;
+}
+
+.terminal.dark .stdout {
+  color: #5ab5d7;
+}
+
+.terminal .stderr-icon,
+.terminal .stderr {
+  color: #f0776d;
+}
+
+.terminal .molt-input-layer {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 4.5rem;
+  border-top: 1px solid var(--molt-border);
+  background: var(--molt-bg);
+}
+
+.terminal .input,
+.terminal .input-highlight {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 5px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: normal;
+  tab-size: 4;
+  text-align: left;
+  white-space: pre;
+}
+
+.terminal .input-highlight {
+  z-index: 0;
+  pointer-events: none;
+  color: var(--molt-fg);
+  background: transparent;
+}
+
+.terminal .input {
+  z-index: 1;
+  resize: none;
+  color: transparent;
+  caret-color: var(--molt-fg);
+  background: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.terminal .input::selection {
+  background: color-mix(in srgb, var(--molt-command) 35%, transparent);
+}
+
 .terminal .input:focus {
   outline: none;
 }
+
+.terminal .syntax-comment { color: var(--molt-comment); font-style: italic; }
+.terminal .syntax-command,
+.terminal .syntax-function { color: var(--molt-command); font-weight: 600; }
+.terminal .syntax-string { color: var(--molt-string); }
+.terminal .syntax-variable { color: var(--molt-variable); }
+.terminal .syntax-escape { color: var(--molt-escape); }
+.terminal .syntax-number { color: var(--molt-number); }
+.terminal .syntax-operator { color: var(--molt-operator); font-weight: 600; }
+.terminal .syntax-separator { color: var(--molt-comment); }
+.terminal .syntax-invalid {
+  color: var(--molt-invalid);
+  text-decoration: underline wavy var(--molt-invalid);
+  text-underline-offset: 2px;
+}
+.terminal .syntax-depth-0 { color: var(--molt-depth-0); }
+.terminal .syntax-depth-1 { color: var(--molt-depth-1); }
+.terminal .syntax-depth-2 { color: var(--molt-depth-2); }
+.terminal .syntax-depth-3 { color: var(--molt-depth-3); }
