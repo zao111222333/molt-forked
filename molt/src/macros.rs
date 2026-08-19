@@ -52,6 +52,44 @@ macro_rules! molt_ok {
     )
 }
 
+/// Returns an `Exception`.  The error message is formatted
+/// as with `format!()`.
+///
+/// If called with one argument, the single argument is used as the error message.
+/// If called with more than one argument, the first is a `format!()` format string,
+/// and the remainder are the values to format.
+///
+/// This macro wraps the [`Exception::molt_err`](types/struct.Exception.html#method.molt_err)
+/// method.
+///
+/// # Examples
+///
+/// ```
+/// use molt::*;
+///
+/// // Return a simple error message
+/// fn err1() -> MoltResult {
+///     // ...
+///     foo_fail().map_err(|e| molt_except!("error message: {}", e))
+/// }
+///
+/// let result = err1();
+/// assert!(result.is_err());
+///
+/// let exception = result.err().unwrap();
+/// assert!(exception.is_error());
+/// assert_eq!(exception.value(), "error message: ...".into());
+/// ```
+#[macro_export]
+macro_rules! molt_except {
+    ($arg:expr) => (
+        $crate::Exception::molt_err($crate::Value::from($arg))
+    );
+    ($($arg:tt)*) => (
+        $crate::Exception::molt_err($crate::Value::from(format!($($arg)*)))
+    )
+}
+
 /// Returns an `Error` `MoltResult`.  The error message is formatted
 /// as with `format!()`.
 ///
@@ -517,6 +555,12 @@ mod tests {
 
         let result: MoltResult = molt_ok!("The answer is {}.", 5);
         assert_eq!(Ok(Value::from("The answer is 5.")), result);
+    }
+
+    #[test]
+    fn test_molt_except() {
+        check_err(Err(molt_except!("error message")), "error message");
+        check_err(Err(molt_except!("error {}", 5)), "error 5");
     }
 
     #[test]
