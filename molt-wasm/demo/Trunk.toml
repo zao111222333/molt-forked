@@ -1,7 +1,7 @@
 # An example Trunk.toml with all possible fields along with their defaults.
 
 # A sem-ver version requirement of trunk required for this project
-trunk-version = "*"
+trunk-version = "0.21.14"
 
 [build]
 # The index HTML file to drive the bundling process.
@@ -54,8 +54,6 @@ ws_protocol = "ws"
 # tls_cert_path = "self_signed_certs/cert.pem"
 
 [clean]
-# The output dir for all final assets.
-dist = "dist"
 # Optionally perform a cargo clean.
 cargo = false
 

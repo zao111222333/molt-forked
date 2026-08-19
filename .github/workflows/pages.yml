@@ -1,0 +1,71 @@
+name: Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  TRUNK_VERSION: 0.21.14
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Trunk
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="trunk-x86_64-unknown-linux-gnu.tar.gz"
+          release_url="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "${RUNNER_TEMP}/${archive}" "${release_url}/${archive}"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "${RUNNER_TEMP}/${archive}.sha256" "${release_url}/${archive}.sha256"
+          cd "${RUNNER_TEMP}"
+          sha256sum --check "${archive}.sha256"
+          tar --extract --gzip --file "${archive}"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Build WASM demo
+        working-directory: molt-wasm/demo
+        run: trunk build --release --dist ../../docs/demo
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+          include-hidden-files: true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
