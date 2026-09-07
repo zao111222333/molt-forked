@@ -8,8 +8,12 @@ pub use crate::commands::{
 
 pub use crate::{
     check_args, gen_command, gen_subcommand,
-    interp::{CommandKind, CommandSet, Interp, InterpBuilder, StandardLibrary},
+    interp::{
+        CommandKind, CommandSet, EnvironmentPolicy, Interp, InterpBuilder, InterpConfig,
+        MoltContext, StandardLibrary,
+    },
     molt_err, molt_err_help, molt_ok,
+    program::{compile, Program},
     test_harness::{test_cmd, test_harness, TestCtx, TestHarnessError},
 };
 

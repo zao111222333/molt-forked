@@ -24,7 +24,11 @@
 
 pub use crate::types::*;
 pub use crate::{
-    interp::{CommandSet, Interp, InterpBuilder, StandardLibrary},
+    interp::{
+        CommandSet, EnvironmentPolicy, Interp, InterpBuilder, InterpConfig, MoltContext,
+        StandardLibrary,
+    },
+    program::{compile, Program},
     test_harness::{test_harness, TestCtx, TestHarnessError},
 };
 mod commands;
@@ -38,6 +42,7 @@ mod tokenizer;
 #[macro_use]
 mod macros;
 mod parser;
+mod program;
 mod scope;
 pub mod syntax {
     //! Shared Tcl 8.6 syntax analysis used by the interpreter and editor frontends.

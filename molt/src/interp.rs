@@ -359,13 +359,15 @@ use crate::dict::dict_new;
 use crate::expr;
 use crate::list::list_to_string;
 use crate::molt_err;
+use crate::molt_err_help;
 use crate::molt_ok;
 use crate::parser::Script;
 use crate::parser::Word;
+use crate::program::Program;
 use crate::scope::ScopeStack;
 use crate::types::*;
 use crate::value::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 // Constants
@@ -383,6 +385,7 @@ pub enum CommandKind {
     Proc,
 }
 #[doc(hidden)]
+#[derive(Clone, Copy)]
 pub struct CommandSet<Ctx: 'static> {
     fn_execute: fn(&str, &mut Interp<Ctx>, &[Value]) -> MoltResult,
     fn_type: fn(&str, &Interp<Ctx>) -> Option<CommandKind>,
@@ -400,6 +403,78 @@ impl<Ctx> CommandSet<Ctx> {
     ) -> Self {
         Self { fn_execute, fn_type, native_names, embedded_names }
     }
+
+    /// Creates a command set containing only the selected Tcl standard
+    /// library and interpreter-defined procedures.
+    ///
+    /// This is useful for generic [`MoltContext`] implementations that do not
+    /// add application commands and cannot name their type parameters inside
+    /// [`gen_command!`](crate::gen_command)'s generated local functions.
+    #[must_use]
+    pub fn standard() -> Self {
+        Self::new(execute_standard::<Ctx>, standard_command_type::<Ctx>, &[], &[])
+    }
+}
+
+fn execute_standard<Ctx: 'static>(
+    name: &str,
+    interp: &mut Interp<Ctx>,
+    argv: &[Value],
+) -> MoltResult {
+    if name == "help" {
+        if argv.get(1).is_some_and(|value| value.as_str() == "-all") {
+            let procedures = interp.proc_command_names();
+            if procedures.is_empty() {
+                return molt_ok!(
+                    "usage of {}:\nbuiltins:\n  {}",
+                    interp.name(),
+                    interp.native_command_names()
+                );
+            }
+            return molt_ok!(
+                "usage of {}:\nbuiltins:\n  {}\nprocedure:\n  {}",
+                interp.name(),
+                interp.native_command_names(),
+                procedures
+            );
+        }
+        return molt_ok!("usage of {}:", interp.name());
+    }
+
+    if let Some(result) = crate::commands::execute_builtin(name, interp, argv) {
+        result
+    } else if let Some(result) = interp.try_execute_proc(name, argv) {
+        result
+    } else {
+        let procedures = interp.proc_command_names();
+        if procedures.is_empty() {
+            molt_err_help!(
+                "unknown command \"{}\", valid commands:\nbuiltins:\n  {}",
+                name,
+                interp.native_command_names()
+            )
+        } else {
+            molt_err_help!(
+                "unknown command \"{}\", valid commands:\nbuiltins:\n  {}\nprocedure:\n  {}",
+                name,
+                interp.native_command_names(),
+                procedures
+            )
+        }
+    }
+}
+
+fn standard_command_type<Ctx: 'static>(
+    name: &str,
+    interp: &Interp<Ctx>,
+) -> Option<CommandKind> {
+    if crate::commands::is_builtin(name, interp.standard_library()) {
+        Some(CommandKind::Native)
+    } else if interp.has_proc(name) {
+        Some(CommandKind::Proc)
+    } else {
+        None
+    }
 }
 
 /// Standard-library profile selected when constructing an interpreter.
@@ -412,13 +487,59 @@ pub enum StandardLibrary {
     Full,
 }
 
+/// Source of the initial Tcl `env()` array.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub enum EnvironmentPolicy {
+    /// Start without importing any environment variables.
+    #[default]
+    Empty,
+    /// Import the current process environment.
+    Process,
+    /// Populate `env()` from an explicit deterministic mapping.
+    Explicit(BTreeMap<String, String>),
+}
+
+/// Configuration shared by the context-oriented interpreter constructors.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InterpConfig {
+    pub name: &'static str,
+    pub standard_library: StandardLibrary,
+    pub environment: EnvironmentPolicy,
+    pub recursion_limit: usize,
+}
+
+impl Default for InterpConfig {
+    fn default() -> Self {
+        Self {
+            name: "molt",
+            standard_library: if cfg!(feature = "full") {
+                StandardLibrary::Full
+            } else {
+                StandardLibrary::Slim
+            },
+            environment: EnvironmentPolicy::Empty,
+            recursion_limit: 1_000,
+        }
+    }
+}
+
+/// Application context for the context-oriented [`Interp`] lifecycle.
+///
+/// The command set is constructed statically, usually with
+/// [`gen_command!`](crate::gen_command). Existing applications may continue to
+/// use [`InterpBuilder`] directly without implementing this trait.
+pub trait MoltContext: 'static + Sized {
+    fn command_set() -> CommandSet<Self>;
+}
+
 /// Builder for an interpreter with a statically generated application command set.
 pub struct InterpBuilder<Ctx: 'static> {
     context: Ctx,
     command_set: CommandSet<Ctx>,
-    use_env: bool,
+    environment: EnvironmentPolicy,
     name: &'static str,
     standard_library: StandardLibrary,
+    recursion_limit: usize,
 }
 
 impl<Ctx: 'static> InterpBuilder<Ctx> {
@@ -428,9 +549,27 @@ impl<Ctx: 'static> InterpBuilder<Ctx> {
         Self {
             context,
             command_set,
-            use_env: false,
+            environment: EnvironmentPolicy::Empty,
             name: "molt",
             standard_library: StandardLibrary::Slim,
+            recursion_limit: 1_000,
+        }
+    }
+
+    /// Starts a builder using a complete [`InterpConfig`].
+    #[must_use]
+    pub fn with_config(
+        context: Ctx,
+        command_set: CommandSet<Ctx>,
+        config: InterpConfig,
+    ) -> Self {
+        Self {
+            context,
+            command_set,
+            environment: config.environment,
+            name: config.name,
+            standard_library: config.standard_library,
+            recursion_limit: config.recursion_limit,
         }
     }
 
@@ -443,8 +582,16 @@ impl<Ctx: 'static> InterpBuilder<Ctx> {
 
     /// Enables or disables importing the process environment as `env()`.
     #[must_use]
-    pub const fn environment(mut self, enabled: bool) -> Self {
-        self.use_env = enabled;
+    pub fn environment(mut self, enabled: bool) -> Self {
+        self.environment =
+            if enabled { EnvironmentPolicy::Process } else { EnvironmentPolicy::Empty };
+        self
+    }
+
+    /// Populates Tcl's `env()` array from an explicit deterministic mapping.
+    #[must_use]
+    pub fn environment_values(mut self, values: BTreeMap<String, String>) -> Self {
+        self.environment = EnvironmentPolicy::Explicit(values);
         self
     }
 
@@ -452,6 +599,13 @@ impl<Ctx: 'static> InterpBuilder<Ctx> {
     #[must_use]
     pub const fn standard_library(mut self, profile: StandardLibrary) -> Self {
         self.standard_library = profile;
+        self
+    }
+
+    /// Sets the maximum nested evaluation depth.
+    #[must_use]
+    pub const fn recursion_limit(mut self, limit: usize) -> Self {
+        self.recursion_limit = limit;
         self
     }
 
@@ -522,6 +676,28 @@ where
     standard_library: StandardLibrary,
 }
 
+impl<Ctx> Clone for Interp<Ctx>
+where
+    Ctx: Clone + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name,
+            command: self.command.clone(),
+            procs: self.procs.clone(),
+            scopes: self.scopes.clone(),
+            context: self.context.clone(),
+            #[cfg(feature = "std_buff")]
+            std_buff: self.std_buff.clone(),
+            recursion_limit: self.recursion_limit,
+            num_levels: self.num_levels,
+            continue_on_error: self.continue_on_error,
+            random_state: self.random_state,
+            standard_library: self.standard_library,
+        }
+    }
+}
+
 /// Splits Tcl's command-argument variable-name form without allocating. A name is an array
 /// element only when it contains an opening parenthesis and ends in a closing parenthesis;
 /// the first opening parenthesis starts the index, matching `parse_varname_literal`.
@@ -546,22 +722,42 @@ impl Default for Interp<()> {
     /// let mut interp = Interp::default();
     /// ```
     fn default() -> Self {
+        let config = InterpConfig {
+            name: "default-app",
+            environment: EnvironmentPolicy::Process,
+            ..InterpConfig::default()
+        };
+        Self::with_config((), config)
+    }
+}
+
+impl MoltContext for () {
+    fn command_set() -> CommandSet<Self> {
         use crate::prelude::*;
-        let command = gen_command!(
+        gen_command!(
             (),
             [(_SOURCE, cmd_source), (_EXIT, cmd_exit), (_PARSE, cmd_parse)],
             []
-        );
-        let profile = if cfg!(feature = "full") {
-            StandardLibrary::Full
-        } else {
-            StandardLibrary::Slim
-        };
-        InterpBuilder::new((), command)
-            .environment(true)
-            .name("default-app")
-            .standard_library(profile)
-            .build()
+        )
+    }
+}
+
+impl<Ctx> Interp<Ctx>
+where
+    Ctx: MoltContext,
+{
+    /// Creates an interpreter using the context's static command set and a
+    /// hermetic default configuration.
+    #[must_use]
+    pub fn new(context: Ctx) -> Self {
+        Self::with_config(context, InterpConfig::default())
+    }
+
+    /// Creates an interpreter using the context's static command set and the
+    /// supplied configuration.
+    #[must_use]
+    pub fn with_config(context: Ctx, config: InterpConfig) -> Self {
+        InterpBuilder::with_config(context, Ctx::command_set(), config).build()
     }
 }
 
@@ -599,27 +795,34 @@ where
     ///
     #[inline]
     fn from_builder(builder: InterpBuilder<Ctx>) -> Self {
+        let InterpBuilder {
+            context,
+            command_set,
+            environment,
+            name,
+            standard_library,
+            recursion_limit,
+        } = builder;
         let mut interp = Self {
-            name: builder.name,
-            command: builder.command_set,
-            recursion_limit: 1000,
+            name,
+            command: command_set,
+            recursion_limit,
             procs: HashMap::new(),
-            context: builder.context,
+            context,
             #[cfg(feature = "std_buff")]
             std_buff: Vec::new(),
             scopes: ScopeStack::new(),
             num_levels: 0,
             continue_on_error: false,
             random_state: 1,
-            standard_library: builder.standard_library,
+            standard_library,
         };
 
         interp.set_scalar("errorInfo", Value::empty()).unwrap();
-        if builder.use_env {
-            // Populate the environment variable.
-            // TODO: Really should be a "linked" variable, where sets to it are tracked and
-            // written back to the environment.
-            interp.populate_env();
+        match environment {
+            EnvironmentPolicy::Empty => {}
+            EnvironmentPolicy::Process => interp.populate_env(std::env::vars()),
+            EnvironmentPolicy::Explicit(values) => interp.populate_env(values),
         }
         interp
     }
@@ -634,6 +837,12 @@ where
     #[inline]
     pub fn context_mut(&mut self) -> &mut Ctx {
         &mut self.context
+    }
+
+    /// Consumes the interpreter and returns its application context.
+    #[inline]
+    pub fn into_context(self) -> Ctx {
+        self.context
     }
 
     /// Returns the application name used by enhanced help.
@@ -668,8 +877,11 @@ where
     ///
     /// Changes to the variable are not mirrored back into the process's environment.
     #[inline]
-    fn populate_env(&mut self) {
-        for (key, value) in std::env::vars() {
+    fn populate_env<I>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        for (key, value) in values {
             // Drop the result, as there's no good reason for this to ever throw an error.
             let _ = self.set_element("env", &key, value.into());
         }
@@ -721,6 +933,12 @@ where
     pub fn eval(&mut self, script: &str) -> MoltResult {
         let value = Value::from(script);
         self.eval_value(&value)
+    }
+
+    /// Evaluates an already compiled reusable program.
+    #[inline]
+    pub fn eval_program(&mut self, program: &Program) -> MoltResult {
+        self.eval_value(program.value())
     }
 
     /// Evaluates the string value of a [`Value`] as a script.  Returns the `Value`
