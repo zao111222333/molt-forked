@@ -1,7 +1,7 @@
 [workspace.package]
 version = "0.6.0"
 edition = "2021"
-license = "MIT"
+license = "BSD-3-Clause"
 authors = ["Will Duquette <will@wjduquette.com>", "Zizheng Guo <gzz_2000@126.com>", "Junzhuo Zhou <zhou@junzhuo.site>"]
 description = "Embeddable TCL interpreter for Rust applications (personal forked)"
 repository = "https://github.com/zao111222333/molt-forked"
