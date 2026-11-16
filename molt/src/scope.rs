@@ -15,7 +15,7 @@
 use crate::types::Exception;
 use crate::types::MoltList;
 use crate::value::Value;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::fmt::Debug;
 
 /// A variable in a `Scope`.  If the variable is defined in the given `Scope`, it is a
@@ -27,7 +27,7 @@ enum Var {
     Scalar(Value),
 
     /// An array variable, with its hash table from names to values.
-    Array(HashMap<String, Value>),
+    Array(IndexMap<String, Value>),
 
     /// An alias to a variable at a higher stack level, with the referenced stack level.
     /// Note that aliases can chain.
@@ -57,7 +57,7 @@ impl Debug for Var {
 #[derive(Default, Debug, Clone)]
 struct Scope {
     /// Vars in this scope by name.
-    map: HashMap<String, Var>,
+    map: IndexMap<String, Var>,
 }
 
 /// The scope stack: a stack of variable scopes corresponding to the Molt `proc`
@@ -187,7 +187,7 @@ impl ScopeStack {
             };
         }
 
-        let mut map = HashMap::new();
+        let mut map = IndexMap::new();
         map.insert(index.into(), val);
         scope.insert(name.into_owned(), Var::Array(map));
         Ok(())
@@ -221,7 +221,7 @@ impl ScopeStack {
         if !array_only
             || matches!(self.stack[level].map.get(name.as_ref()), Some(Var::Array(_)))
         {
-            self.stack[level].map.remove(name.as_ref());
+            self.stack[level].map.swap_remove(name.as_ref());
         }
     }
 
@@ -348,7 +348,7 @@ impl ScopeStack {
     pub fn unset_element(&mut self, name: &str, index: &str) {
         let (level, name) = self.resolved_target(self.current(), name);
         if let Some(Var::Array(map)) = self.stack[level].map.get_mut(name.as_ref()) {
-            map.remove(index);
+            map.swap_remove(index);
         }
     }
 
@@ -374,7 +374,7 @@ impl ScopeStack {
             };
         }
 
-        let mut map = HashMap::new();
+        let mut map = IndexMap::new();
         insert_kvlist(&mut map, kvlist);
         scope.insert(name.into_owned(), Var::Array(map));
         Ok(())
@@ -460,7 +460,7 @@ impl ScopeStack {
 }
 
 // Insert the flat key-value list into the map.
-fn insert_kvlist(map: &mut HashMap<String, Value>, list: &[Value]) {
+fn insert_kvlist(map: &mut IndexMap<String, Value>, list: &[Value]) {
     for kv in list.chunks(2) {
         map.insert(kv[0].as_str().into(), kv[1].clone());
     }

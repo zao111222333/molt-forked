@@ -367,7 +367,8 @@ use crate::program::Program;
 use crate::scope::ScopeStack;
 use crate::types::*;
 use crate::value::Value;
-use std::collections::{BTreeMap, HashMap};
+use indexmap::IndexMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 // Constants
@@ -653,7 +654,7 @@ where
     name: &'static str,
     // Command Table
     command: CommandSet<Ctx>,
-    procs: HashMap<String, Rc<Procedure>>,
+    procs: IndexMap<String, Rc<Procedure>>,
     // Variable Table
     scopes: ScopeStack,
 
@@ -807,7 +808,7 @@ where
             name,
             command: command_set,
             recursion_limit,
-            procs: HashMap::new(),
+            procs: IndexMap::new(),
             context,
             #[cfg(feature = "std_buff")]
             std_buff: Vec::new(),
@@ -2001,7 +2002,7 @@ where
     /// ```
     #[inline]
     pub fn rename_proc(&mut self, old_name: &str, new_name: &str) {
-        if let Some(proc) = self.procs.remove(old_name) {
+        if let Some(proc) = self.procs.swap_remove(old_name) {
             self.procs.insert(new_name.into(), proc);
         }
     }
@@ -2019,7 +2020,7 @@ where
     /// ```
     #[inline]
     pub fn remove_proc(&mut self, name: &str) {
-        self.procs.remove(name);
+        self.procs.swap_remove(name);
     }
 
     /// Gets a vector of the names of the existing commands.
